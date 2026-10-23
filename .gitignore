@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target
+
+# Backup files
+**/*.rs.bk
+
+# Sentinela runtime incident logs
+sentinela_*.log
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,16 @@
+[package]
+name = "sentinela"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+ratatui = "0.28"
+crossterm = "0.28"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+chrono = "0.4"
+get_if_addrs = "0.5"
+# Captura de pacotes raw para deteção de SYN scans (nmap -sS, etc.)
+# Requer CAP_NET_RAW ou sudo. Se falhar, o Sentinela cai back para só ligações completas.
+pnet = "0.35"

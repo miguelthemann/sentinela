@@ -1,0 +1,349 @@
+mod models;
+mod network;
+mod scanner;
+mod traps;
+mod ui;
+
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use models::{Incident, Language, PortWarning, SeverityFilter};
+use ratatui::{backend::CrosstermBackend, Terminal};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    error::Error,
+    io,
+    time::{Duration, Instant},
+};
+use tokio::sync::mpsc;
+
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    let _ = execute!(io::stdout(), crossterm::cursor::Show);
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    // Configura hook de pânico para restaurar o terminal antes de abortar
+    let default_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        restore_terminal();
+        default_panic_hook(panic_info);
+    }));
+
+    // Configura canal de escuta para SIGINT (Ctrl+C)
+    let (sigint_tx, mut sigint_rx) = mpsc::channel::<()>(1);
+    tokio::spawn(async move {
+        if let Ok(()) = tokio::signal::ctrl_c().await {
+            let _ = sigint_tx.send(()).await;
+        }
+    });
+
+    // Lê portas custom passadas como argumento: ./sentinela 2222 8080 9999
+    // Se nenhuma for passada, usa as portas padrão
+    let trap_ports: Vec<u16> = {
+        let args: Vec<String> = env::args().skip(1).collect();
+        if args.is_empty() {
+            traps::DEFAULT_TRAP_PORTS.to_vec()
+        } else {
+            let parsed: Vec<u16> = args
+                .iter()
+                .filter_map(|a| a.parse::<u16>().ok())
+                .collect();
+            if parsed.is_empty() {
+                eprintln!("Portas inválidas. A usar portas padrão.");
+                traps::DEFAULT_TRAP_PORTS.to_vec()
+            } else {
+                parsed
+            }
+        }
+    };
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<Incident>();
+
+    traps::init_logger().await;
+    let log_file_name = traps::get_log_filename();
+    let local_ips = network::get_all_local_ips();
+    let sys_info = network::get_system_info();
+    let mut lang = network::detect_language();
+
+    let (_active_traps, failed_traps) = traps::start_traps(tx.clone(), &trap_ports).await;
+
+    // Tenta iniciar o scanner de pacotes raw (requer CAP_NET_RAW / sudo).
+    // Se falhar por falta de permissão, continua apenas com deteção de ligações completas.
+    let scanner_active = scanner::start_packet_scanner(tx, trap_ports.clone());
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut incidents: Vec<Incident> = Vec::new();
+    let mut killswitch_active = false;
+    let mut killswitch_failed = false;
+    let mut show_help = false;
+    let mut show_warnings = false;
+    let mut cached_warnings: Vec<PortWarning> = Vec::new();
+    let mut scroll_offset: usize = 0;
+    let mut severity_filter = SeverityFilter::All;
+
+    // Mapa de hit_count por IP (acumula ao longo da sessão)
+    let mut ip_hit_counts: HashMap<String, usize> = HashMap::new();
+
+    let start_time = Instant::now();
+    let mut total_detections_count: usize = 0;
+    let mut unique_ips: HashSet<String> = HashSet::new();
+    let mut port_stats: HashMap<u16, usize> = HashMap::new();
+    let mut severity_stats: HashMap<String, usize> = HashMap::new();
+
+    loop {
+        // Verifica se recebeu SIGINT (Ctrl+C) em segundo plano
+        if sigint_rx.try_recv().is_ok() {
+            break;
+        }
+
+        let mut batch_count = 0;
+        while let Ok(mut incident) = rx.try_recv() {
+            batch_count += 1;
+            total_detections_count += 1;
+            unique_ips.insert(incident.ip.clone());
+            *port_stats.entry(incident.port).or_insert(0) += 1;
+            *severity_stats.entry(incident.severity.clone()).or_insert(0) += 1;
+
+            // Atualiza hit_count cumulativo por IP (usando HashMap - O(1) ao invés de O(n))
+            let count = ip_hit_counts.entry(incident.ip.clone()).or_insert(0);
+            *count += 1;
+            incident.hit_count = *count;
+
+            // Atualiza a entrada de log em disco correspondente com o hit_count real
+            traps::update_log_hit_count(&log_file_name, &incident.ip, *count);
+
+            // Dispara notificação nativa no ambiente gráfico (não bloqueante e com rate limit)
+            network::send_desktop_alert(&incident);
+
+            incidents.insert(0, incident);
+            // Guarda mais incidentes em memória (100) para permitir scroll
+            if incidents.len() > 100 {
+                incidents.pop();
+            }
+            // Preserva a posição de scroll do utilizador ao receber novos incidentes
+
+            if batch_count >= 30 {
+                break; // Processa no máximo 30 incidentes por ciclo para a UI nunca encravar
+            }
+        }
+
+        // Calcula a lista filtrada para passar à UI e para gerir scroll
+        let filtered_count = incidents
+            .iter()
+            .filter(|i| severity_filter.matches(&i.severity))
+            .count();
+
+        terminal.draw(|f| {
+            ui::render_ui(
+                f,
+                &incidents,
+                killswitch_active,
+                killswitch_failed,
+                &local_ips,
+                &log_file_name,
+                &sys_info,
+                lang,
+                show_help,
+                show_warnings,
+                &cached_warnings,
+                &failed_traps,
+                scroll_offset,
+                severity_filter,
+                &severity_stats,
+                &trap_ports,
+                scanner_active,
+            );
+        })?;
+
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+
+                // Interceta Ctrl+C para saída graciosa com restauração de terminal
+                if let KeyCode::Char('c') = key.code {
+                    if key.modifiers.contains(event::KeyModifiers::CONTROL) {
+                        break;
+                    }
+                }
+
+                if show_help || show_warnings {
+                    match key.code {
+                        KeyCode::Char('i') | KeyCode::Char('I') => show_help = false,
+                        KeyCode::Char('w') | KeyCode::Char('W') => show_warnings = false,
+                        KeyCode::Esc => {
+                            show_help = false;
+                            show_warnings = false;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Char('Q') => break,
+                        KeyCode::Char('i') | KeyCode::Char('I') => show_help = true,
+                        KeyCode::Char('w') | KeyCode::Char('W') => {
+                            cached_warnings = network::scan_open_ports_warnings(&trap_ports, lang);
+                            show_warnings = true;
+                        }
+                        KeyCode::Char('l') | KeyCode::Char('L') => {
+                            lang = match lang {
+                                Language::Pt => Language::En,
+                                Language::En => Language::Pt,
+                            };
+                        }
+                        KeyCode::Char('k') | KeyCode::Char('K') => {
+                            let target = !killswitch_active;
+                            match network::toggle_network(target) {
+                                Ok(()) => {
+                                    killswitch_active = target;
+                                    killswitch_failed = false;
+                                }
+                                Err(errs) => {
+                                    killswitch_active = target;
+                                    killswitch_failed = true;
+                                    let msg = match lang {
+                                        Language::Pt => "Falha no Killswitch: Isolamento de rede não é fiável!",
+                                        Language::En => "Killswitch failed: Network isolation is not reliable!",
+                                    };
+                                    network::send_desktop_notification_raw(
+                                        "🚨 Sentinela: Killswitch",
+                                        &format!("{}\n{}", msg, errs.first().cloned().unwrap_or_default()),
+                                        "critical",
+                                    );
+                                }
+                            }
+                        }
+                        KeyCode::Char('r') | KeyCode::Char('R') => {
+                            killswitch_active = false;
+                            killswitch_failed = false;
+                            let _ = network::toggle_network(false);
+                        }
+                        // Filtro de severidade
+                        KeyCode::Char('f') | KeyCode::Char('F') => {
+                            severity_filter = severity_filter.next();
+                            scroll_offset = 0;
+                        }
+                        // Scroll na tabela
+                        KeyCode::Down => {
+                            if scroll_offset + 1 < filtered_count {
+                                scroll_offset += 1;
+                            }
+                        }
+                        KeyCode::Up => {
+                            scroll_offset = scroll_offset.saturating_sub(1);
+                        }
+                        KeyCode::Home => {
+                            scroll_offset = 0;
+                        }
+                        KeyCode::End => {
+                            scroll_offset = filtered_count.saturating_sub(1);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    // Se o killswitch ficou ativo, repõe a rede automaticamente ao sair
+    if killswitch_active {
+        let _ = network::toggle_network(false);
+    }
+
+    restore_terminal();
+
+    let duration = start_time.elapsed();
+    let minutes = duration.as_secs() / 60;
+    let seconds = duration.as_secs() % 60;
+
+    let full_log_path = match env::current_dir() {
+        Ok(dir) => dir.join(&log_file_name).to_string_lossy().into_owned(),
+        Err(_) => log_file_name.clone(),
+    };
+
+    let top_port_info = port_stats
+        .into_iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(p, c)| format!("Porta {} ({}x)", p, c))
+        .unwrap_or_else(|| match lang {
+            Language::Pt => "Nenhuma".to_string(),
+            Language::En => "None".to_string(),
+        });
+
+    let top_ip_info = ip_hit_counts
+        .into_iter()
+        .max_by_key(|(_, c)| *c)
+        .map(|(ip, c)| format!("{} ({}x)", ip, c))
+        .unwrap_or_else(|| match lang {
+            Language::Pt => "Nenhum".to_string(),
+            Language::En => "None".to_string(),
+        });
+
+    let critical_count = severity_stats.get("CRÍTICO").copied().unwrap_or(0);
+    let medium_count = severity_stats.get("MÉDIO").copied().unwrap_or(0);
+    let alert_count = severity_stats.get("ALERTA").copied().unwrap_or(0);
+    let scan_count = severity_stats.get("SCAN").copied().unwrap_or(0);
+    let sweep_count = severity_stats.get("SWEEP").copied().unwrap_or(0);
+
+    let (title, time_lbl, det_lbl, ip_lbl, top_ip_lbl, port_lbl, sev_lbl, log_lbl) = match lang {
+        Language::Pt => (
+            "🛡️  RELATÓRIO DE SESSÃO - SENTINELA",
+            "Tempo em Guarda",
+            "Deteções Totais",
+            "Invasores Únicos",
+            "IP Mais Ativo",
+            "Porta Mais Visada",
+            "Severidade",
+            "Registo Diário",
+        ),
+        Language::En => (
+            "🛡️  SENTINELA SESSION AUDIT REPORT",
+            "Active Uptime",
+            "Total Alerts",
+            "Unique IPs",
+            "Most Active IP",
+            "Top Target Port",
+            "Severity Breakdown",
+            "Daily Log File",
+        ),
+    };
+
+    let sev_breakdown = match lang {
+        Language::Pt => format!(
+            "\x1b[1;31m{} Críticos\x1b[0m | \x1b[1;33m{} Médios\x1b[0m | \x1b[1;34m{} Alertas\x1b[0m | \x1b[1;35m{} Scans\x1b[0m | \x1b[1;31m{} Varrimentos\x1b[0m",
+            critical_count, medium_count, alert_count, scan_count, sweep_count
+        ),
+        Language::En => format!(
+            "\x1b[1;31m{} Critical\x1b[0m | \x1b[1;33m{} Medium\x1b[0m | \x1b[1;34m{} Alerts\x1b[0m | \x1b[1;35m{} Scans\x1b[0m | \x1b[1;31m{} Sweeps\x1b[0m",
+            critical_count, medium_count, alert_count, scan_count, sweep_count
+        ),
+    };
+
+    println!("\n\x1b[1;36m======================================================================\x1b[0m");
+    println!("\x1b[1;32m                  {}                 \x1b[0m", title);
+    println!("\x1b[1;36m======================================================================\x1b[0m");
+    println!(" ⏱️  {:<18} : \x1b[1m{:02}m {:02}s\x1b[0m", time_lbl, minutes, seconds);
+    println!(" 🎯 {:<18} : \x1b[1;33m{}\x1b[0m", det_lbl, total_detections_count);
+    println!(" 👾 {:<18} : \x1b[1m{}\x1b[0m", ip_lbl, unique_ips.len());
+    println!(" 🔥 {:<18} : \x1b[1;31m{}\x1b[0m", top_ip_lbl, top_ip_info);
+    println!(" 🚪 {:<18} : \x1b[1;31m{}\x1b[0m", port_lbl, top_port_info);
+    println!(" 🚨 {:<18} : {}", sev_lbl, sev_breakdown);
+    println!("----------------------------------------------------------------------");
+    println!(" 💻 SO / Kernel       : {} ({}) [{}]", sys_info.distro, sys_info.kernel, sys_info.arch);
+    println!(" 📁 {:<18} : \x1b[1;32m{}\x1b[0m", log_lbl, full_log_path);
+    println!("\x1b[1;36m======================================================================\x1b[0m\n");
+
+    Ok(())
+}

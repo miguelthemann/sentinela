@@ -32,13 +32,17 @@ irm https://raw.githubusercontent.com/teizinh/sentinela/main/scripts/install.ps1
 
 ### 📦 Descarregamento Direto das Releases
 
-| Sistema Operativo | Arquitetura | Pacote Oficial |
+| Sistema Operativo | Formato / Tipo | Pacote Oficial |
 | :--- | :--- | :--- |
-| **Linux** | x86_64 (64-bit Intel/AMD) | [`sentinela-linux-x86_64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.tar.gz) |
-| **Linux** | ARM64 / aarch64 (Raspberry Pi / Servidores ARM) | [`sentinela-linux-arm64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-arm64.tar.gz) |
-| **Windows** | x86_64 (Windows 10/11) | [`sentinela-windows-x64.zip`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-windows-x64.zip) |
-| **macOS** | Apple Silicon (M1 / M2 / M3 / M4) | [`sentinela-macos-arm64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-macos-arm64.tar.gz) |
-| **macOS** | Intel (x86_64) | [`sentinela-macos-x64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-macos-x64.tar.gz) |
+| **Windows** | **Instalador Gráfico Oficial (NSIS Setup Wizard)** | [⬇️ `sentinela-windows-x64-setup.exe`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-windows-x64-setup.exe) |
+| **Windows** | Arquivo Zip Portátil | [`sentinela-windows-x64.zip`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-windows-x64.zip) |
+| **Linux (Debian / Ubuntu / Mint)** | **Pacote Nativo `.deb` (x86_64)** | [⬇️ `sentinela-linux-x86_64.deb`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.deb) |
+| **Linux (Fedora / RHEL / openSUSE)** | **Pacote Nativo `.rpm` (x86_64)** | [⬇️ `sentinela-linux-x86_64.rpm`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.rpm) |
+| **Linux (Raspberry Pi / ARM64)** | Pacote Nativo `.deb` (arm64) | [`sentinela-linux-arm64.deb`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-arm64.deb) |
+| **Linux (Universal)** | Arquivo Tarball + `install.sh` (x86_64) | [`sentinela-linux-x86_64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.tar.gz) |
+| **Linux (Universal)** | Arquivo Tarball + `install.sh` (arm64) | [`sentinela-linux-arm64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-arm64.tar.gz) |
+| **macOS (Apple Silicon)** | Tarball M1 / M2 / M3 / M4 (arm64) | [`sentinela-macos-arm64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-macos-arm64.tar.gz) |
+| **macOS (Intel)** | Tarball 64-bit (x86_64) | [`sentinela-macos-x64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-macos-x64.tar.gz) |
 
 ---
 

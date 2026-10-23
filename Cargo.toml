@@ -9,8 +9,12 @@ ratatui = "0.28"
 crossterm = "0.28"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 chrono = "0.4"
 get_if_addrs = "0.5"
+
 # Captura de pacotes raw para deteção de SYN scans (nmap -sS, etc.)
-# Requer CAP_NET_RAW ou sudo. Se falhar, o Sentinela cai back para só ligações completas.
+# No Linux usa AF_PACKET nativo do kernel (requer CAP_NET_RAW ou sudo).
+# Em Windows e macOS, o Sentinela opera através do motor TCP assíncrono nativo sem drivers adicionais.
+[target.'cfg(target_os = "linux")'.dependencies]
 pnet = "0.35"

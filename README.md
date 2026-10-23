@@ -8,9 +8,37 @@
   <img src="https://img.shields.io/badge/Language-Rust-orange.svg" alt="Rust">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui">
-  <img src="https://img.shields.io/badge/Platform-Linux-lightgrey.svg" alt="Linux">
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg" alt="Platforms">
   <img src="https://img.shields.io/badge/Version-0.3.0-green.svg" alt="Version">
 </p>
+
+---
+
+## ⚡ Instalação Rápida (Releases Oficiais)
+
+O Sentinela dispõe de instaladores automatizados e binários portáteis pré-compilados para os principais sistemas operativos:
+
+### 🐧 Linux & 🍎 macOS (Terminal)
+Executa o comando de instalação num terminal (deteta a arquitetura `x86_64` ou `arm64`, instala em `/usr/local/bin` e configura `CAP_NET_RAW` no Linux automaticamente):
+```bash
+curl -fsSL https://raw.githubusercontent.com/teizinh/sentinela/main/install.sh | bash
+```
+
+### 🪟 Windows 10/11 (PowerShell)
+Executa na PowerShell (instala em `%LOCALAPPDATA%\Programs\Sentinela`, adiciona ao `PATH` e cria atalho no Ambiente de Trabalho):
+```powershell
+irm https://raw.githubusercontent.com/teizinh/sentinela/main/scripts/install.ps1 | iex
+```
+
+### 📦 Descarregamento Direto das Releases
+
+| Sistema Operativo | Arquitetura | Pacote Oficial |
+| :--- | :--- | :--- |
+| **Linux** | x86_64 (64-bit Intel/AMD) | [`sentinela-linux-x86_64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.tar.gz) |
+| **Linux** | ARM64 / aarch64 (Raspberry Pi / Servidores ARM) | [`sentinela-linux-arm64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-arm64.tar.gz) |
+| **Windows** | x86_64 (Windows 10/11) | [`sentinela-windows-x64.zip`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-windows-x64.zip) |
+| **macOS** | Apple Silicon (M1 / M2 / M3 / M4) | [`sentinela-macos-arm64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-macos-arm64.tar.gz) |
+| **macOS** | Intel (x86_64) | [`sentinela-macos-x64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-macos-x64.tar.gz) |
 
 ---
 

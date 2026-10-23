@@ -2,12 +2,14 @@ use crate::models::{GeoResponse, Incident, Language, PortWarning, SysInfo};
 use get_if_addrs::get_if_addrs;
 use std::{
     collections::HashMap,
-    env, fs,
+    env,
     net::IpAddr,
     process::{Command, Stdio},
     sync::OnceLock,
     time::Duration,
 };
+#[cfg(target_os = "linux")]
+use std::fs;
 use tokio::sync::RwLock;
 
 #[derive(Clone, Debug)]
@@ -65,6 +67,7 @@ pub fn is_host_ip(ip: IpAddr) -> bool {
     false
 }
 
+#[cfg(target_os = "linux")]
 pub fn get_system_info() -> SysInfo {
     let distro = fs::read_to_string("/etc/os-release")
         .ok()
@@ -89,6 +92,49 @@ pub fn get_system_info() -> SysInfo {
     let arch = env::consts::ARCH.to_string();
 
     SysInfo { distro, kernel, arch }
+}
+
+#[cfg(target_os = "windows")]
+pub fn get_system_info() -> SysInfo {
+    let distro = "Windows".to_string();
+    let kernel = match Command::new("cmd").args(["/c", "ver"]).output() {
+        Ok(out) => {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if s.is_empty() {
+                "Windows 10/11".to_string()
+            } else {
+                s
+            }
+        }
+        Err(_) => "Windows".to_string(),
+    };
+    let arch = env::consts::ARCH.to_string();
+
+    SysInfo { distro, kernel, arch }
+}
+
+#[cfg(target_os = "macos")]
+pub fn get_system_info() -> SysInfo {
+    let distro = match Command::new("sw_vers").arg("-productVersion").output() {
+        Ok(out) => format!("macOS {}", String::from_utf8_lossy(&out.stdout).trim()),
+        Err(_) => "macOS".to_string(),
+    };
+    let kernel = match Command::new("uname").arg("-r").output() {
+        Ok(out) => format!("Darwin {}", String::from_utf8_lossy(&out.stdout).trim()),
+        Err(_) => "Darwin".to_string(),
+    };
+    let arch = env::consts::ARCH.to_string();
+
+    SysInfo { distro, kernel, arch }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn get_system_info() -> SysInfo {
+    SysInfo {
+        distro: env::consts::OS.to_string(),
+        kernel: "Unix".to_string(),
+        arch: env::consts::ARCH.to_string(),
+    }
 }
 
 pub fn get_all_local_ips() -> String {
@@ -187,6 +233,7 @@ pub async fn inspect_ip(ip: IpAddr) -> (String, String, String) {
 /// Captura os códigos de retorno dos comandos de sistema. Se o isolamento falhar,
 /// regista os erros específicos no ficheiro de log e devolve `Err(erros)` para que
 /// a interface gráfica e o utilizador sejam notificados de que o isolamento falhou.
+#[cfg(target_os = "linux")]
 pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     let mut successes = 0;
@@ -301,6 +348,55 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
+    let ps_cmd = if isolate {
+        "Get-NetAdapter | Disable-NetAdapter -Confirm:$false"
+    } else {
+        "Get-NetAdapter | Enable-NetAdapter -Confirm:$false"
+    };
+
+    match Command::new("powershell")
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd])
+        .output()
+    {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let msg = if err.is_empty() {
+                "PowerShell falhou ao alterar estado das placas de rede (requer privilégios de Administrador)".to_string()
+            } else {
+                err
+            };
+            Err(vec![msg])
+        }
+        Err(e) => Err(vec![format!("Falha ao invocar PowerShell: {}", e)]),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
+    let state = if isolate { "off" } else { "on" };
+    match Command::new("networksetup").args(["-setairportpower", "en0", state]).output() {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if err.is_empty() {
+                Ok(())
+            } else {
+                Err(vec![err])
+            }
+        }
+        Err(e) => Err(vec![format!("Falha ao invocar networksetup: {}", e)]),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn toggle_network(_isolate: bool) -> Result<(), Vec<String>> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn is_local_only_binding(ip_hex: &str) -> bool {
     if ip_hex.len() == 8 {
         if let Ok(val) = u32::from_str_radix(ip_hex, 16) {
@@ -319,10 +415,9 @@ fn is_local_only_binding(ip_hex: &str) -> bool {
     false
 }
 
-pub fn scan_open_ports_warnings(trap_ports: &[u16], lang: Language) -> Vec<PortWarning> {
-    let mut warnings = Vec::new();
+#[cfg(target_os = "linux")]
+fn get_listening_ports() -> Vec<u16> {
     let mut listening_ports = Vec::new();
-
     for path in &["/proc/net/tcp", "/proc/net/tcp6"] {
         if let Ok(content) = fs::read_to_string(path) {
             for line in content.lines().skip(1) {
@@ -343,6 +438,61 @@ pub fn scan_open_ports_warnings(trap_ports: &[u16], lang: Language) -> Vec<PortW
             }
         }
     }
+    listening_ports
+}
+
+#[cfg(target_os = "windows")]
+fn get_listening_ports() -> Vec<u16> {
+    let mut listening_ports = Vec::new();
+    if let Ok(output) = Command::new("netstat").args(["-ano", "-p", "tcp"]).output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // Formato típico Windows: TCP    0.0.0.0:8080    0.0.0.0:0    LISTENING    1234
+            if parts.len() >= 4 && parts[0].eq_ignore_ascii_case("TCP") && parts[3].eq_ignore_ascii_case("LISTENING") {
+                let local_addr = parts[1];
+                if local_addr.starts_with("127.") || local_addr.starts_with("[::1]") {
+                    continue;
+                }
+                if let Some((_ip, port_str)) = local_addr.rsplit_once(':') {
+                    if let Ok(port) = port_str.parse::<u16>() {
+                        if !listening_ports.contains(&port) {
+                            listening_ports.push(port);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    listening_ports
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn get_listening_ports() -> Vec<u16> {
+    let mut listening_ports = Vec::new();
+    if let Ok(output) = Command::new("netstat").args(["-an", "-p", "tcp"]).output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            if line.contains("LISTEN") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                for part in parts {
+                    if let Some((_ip, port_str)) = part.rsplit_once('.') {
+                        if let Ok(port) = port_str.parse::<u16>() {
+                            if !listening_ports.contains(&port) {
+                                listening_ports.push(port);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    listening_ports
+}
+
+pub fn scan_open_ports_warnings(trap_ports: &[u16], lang: Language) -> Vec<PortWarning> {
+    let mut warnings = Vec::new();
+    let listening_ports = get_listening_ports();
 
     for port in listening_ports {
         if trap_ports.contains(&port) {
@@ -456,7 +606,7 @@ pub fn send_desktop_alert(incident: &Incident) {
     }
     LAST_NOTIFICATION_MILLIS.store(now_millis, Ordering::Relaxed);
 
-    let urgency = match incident.severity.as_str() {
+    let _urgency = match incident.severity.as_str() {
         "CRÍTICO" => "critical".to_string(),
         _ => "normal".to_string(),
     };
@@ -473,13 +623,13 @@ pub fn send_desktop_alert(incident: &Incident) {
         incident.ip, incident.hit_count, incident.port, incident.service, location
     );
 
-    // Executa em thread separada com spawn() SEM esperar por status()
-    // para nunca bloquear a UI, mesmo se notify-send encravar ou não tiver DBUS
+    // Executa notificação em thread separada para nunca bloquear o loop principal da TUI
+    #[cfg(target_os = "linux")]
     std::thread::spawn(move || {
         let _ = Command::new("notify-send")
             .args([
                 "-u",
-                &urgency,
+                &_urgency,
                 "-a",
                 "Sentinela HIDS",
                 "-i",
@@ -491,17 +641,62 @@ pub fn send_desktop_alert(incident: &Incident) {
             .stderr(Stdio::null())
             .spawn();
     });
+
+    #[cfg(target_os = "windows")]
+    std::thread::spawn(move || {
+        let ps_script = format!(
+            r#"[void] [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');
+$notify = New-Object System.Windows.Forms.NotifyIcon;
+$notify.Icon = [System.Drawing.SystemIcons]::Warning;
+$notify.BalloonTipIcon = 'Warning';
+$notify.BalloonTipTitle = '{}';
+$notify.BalloonTipText = '{}';
+$notify.Visible = $True;
+$notify.ShowBalloonTip(4000);
+Start-Sleep -Seconds 4;
+$notify.Dispose();"#,
+            title.replace('\'', "''"),
+            body.replace('\'', "''")
+        );
+
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    });
+
+    #[cfg(target_os = "macos")]
+    std::thread::spawn(move || {
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            body.replace('"', "\\\""),
+            title.replace('"', "\\\"")
+        );
+        let _ = Command::new("osascript")
+            .args(["-e", &script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    });
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        // Outros SOs sem interface gráfica direta
+    }
 }
 
 pub fn send_desktop_notification_raw(title: &str, body: &str, urgency: &str) {
     let t = title.to_string();
     let b = body.to_string();
-    let u = urgency.to_string();
+    let _u = urgency.to_string();
+
+    #[cfg(target_os = "linux")]
     std::thread::spawn(move || {
         let _ = Command::new("notify-send")
             .args([
                 "-u",
-                &u,
+                &_u,
                 "-a",
                 "Sentinela HIDS",
                 "-i",
@@ -513,6 +708,49 @@ pub fn send_desktop_notification_raw(title: &str, body: &str, urgency: &str) {
             .stderr(Stdio::null())
             .spawn();
     });
+
+    #[cfg(target_os = "windows")]
+    std::thread::spawn(move || {
+        let ps_script = format!(
+            r#"[void] [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');
+$notify = New-Object System.Windows.Forms.NotifyIcon;
+$notify.Icon = [System.Drawing.SystemIcons]::Error;
+$notify.BalloonTipIcon = 'Error';
+$notify.BalloonTipTitle = '{}';
+$notify.BalloonTipText = '{}';
+$notify.Visible = $True;
+$notify.ShowBalloonTip(4000);
+Start-Sleep -Seconds 4;
+$notify.Dispose();"#,
+            t.replace('\'', "''"),
+            b.replace('\'', "''")
+        );
+
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    });
+
+    #[cfg(target_os = "macos")]
+    std::thread::spawn(move || {
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            b.replace('"', "\\\""),
+            t.replace('"', "\\\"")
+        );
+        let _ = Command::new("osascript")
+            .args(["-e", &script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    });
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        // No-op
+    }
 }
 
 #[cfg(test)]

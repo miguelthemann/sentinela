@@ -1,0 +1,158 @@
+name: Release Sentinela
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag de versão para lançamento (ex: v0.3.0)'
+        required: false
+        default: 'v0.3.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: sentinela
+            asset_name: sentinela-linux-x86_64
+            archive_format: tar.gz
+          # Linux ARM64 (Raspberry Pi / Servidores ARM)
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: sentinela
+            asset_name: sentinela-linux-arm64
+            archive_format: tar.gz
+            cross: true
+          # Windows x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: sentinela.exe
+            asset_name: sentinela-windows-x64
+            archive_format: zip
+          # macOS Apple Silicon (M1/M2/M3/M4)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: sentinela
+            asset_name: sentinela-macos-arm64
+            archive_format: tar.gz
+          # macOS Intel (x86_64)
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact_name: sentinela
+            asset_name: sentinela-macos-x64
+            archive_format: tar.gz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install aarch64 cross-linker (Linux ARM64)
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build Release Binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          fi
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Package Release Assets (Unix - tar.gz)
+        if: matrix.archive_format == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} dist/
+          cp install.sh dist/
+          cp README.md dist/
+          cp LICENSE dist/
+          cd dist
+          chmod +x sentinela install.sh
+          tar -czf ../${{ matrix.asset_name }}.tar.gz *
+          cd ..
+          shasum -a 256 ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.sha256
+
+      - name: Package Release Assets (Windows - zip)
+        if: matrix.archive_format == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" -Destination dist/
+          Copy-Item "scripts/install.ps1" -Destination dist/
+          Copy-Item "scripts/install.bat" -Destination dist/
+          Copy-Item "README.md" -Destination dist/
+          Copy-Item "LICENSE" -Destination dist/
+          Compress-Archive -Path dist/* -DestinationPath "${{ matrix.asset_name }}.zip" -Force
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.asset_name }}.zip").Hash.ToLower()
+          "$hash  ${{ matrix.asset_name }}.zip" | Out-File -Encoding ascii "${{ matrix.asset_name }}.sha256"
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: |
+            ${{ matrix.asset_name }}.*
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate Checksums
+        shell: bash
+        run: |
+          cd release-assets
+          cat *.sha256 > SHA256SUMS.txt
+          rm -f *.sha256
+          echo "=== Checksums gerados ==="
+          cat SHA256SUMS.txt
+
+      - name: Determine Release Tag
+        id: get_tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get_tag.outputs.tag }}
+          name: "Sentinela ${{ steps.get_tag.outputs.tag }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-assets/*

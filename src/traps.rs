@@ -105,6 +105,7 @@ fn line_matches_ip(line: &str, ip: &str) -> bool {
 /// reduzindo significativamente as chamadas de sistema ao disco e economizando energia.
 ///
 /// Esta função é não-blocking - retorna imediatamente após adicionar ao buffer.
+#[allow(dead_code)]
 pub fn add_log_entry(entry: String) {
     static LOG_BUFFER: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let mut buffer = LOG_BUFFER.lock().unwrap();

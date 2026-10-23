@@ -1,13 +1,13 @@
 name: Release Sentinela
 
-on:
+"on":
   push:
     tags:
       - 'v*'
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag de versão para lançamento (ex: v0.3.0)'
+        description: 'Tag de versao para lancamento (ex: v0.3.0)'
         required: false
         default: 'v0.3.0'
 
@@ -69,6 +69,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      - name: Install alien for RPM packaging (Ubuntu x86_64)
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y alien
+
       - name: Build Release Binary
         shell: bash
         run: |
@@ -77,70 +83,11 @@ jobs:
           fi
           cargo build --release --target ${{ matrix.target }}
 
-      - name: Package Release Assets (Unix - tar.gz, deb, rpm)
+      - name: Package Release Assets (Unix)
         if: matrix.archive_format == 'tar.gz'
         shell: bash
         run: |
-          # 1. Tarball com script de instalação
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} dist/
-          cp install.sh dist/
-          cp README.md dist/
-          cp LICENSE dist/
-          cd dist
-          chmod +x sentinela install.sh
-          tar -czf ../${{ matrix.asset_name }}.tar.gz *
-          cd ..
-          shasum -a 256 ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
-
-          # 2. Se for Linux, gera pacote nativo .deb (e .rpm em x86_64)
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            DEB_ARCH="amd64"
-            if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-              DEB_ARCH="arm64"
-            fi
-
-            DEB_ROOT="sentinela_pkg"
-            mkdir -p "${DEB_ROOT}/DEBIAN"
-            mkdir -p "${DEB_ROOT}/usr/local/bin"
-            mkdir -p "${DEB_ROOT}/usr/share/doc/sentinela"
-
-            cp "target/${{ matrix.target }}/release/sentinela" "${DEB_ROOT}/usr/local/bin/"
-            chmod 755 "${DEB_ROOT}/usr/local/bin/sentinela"
-            cp README.md LICENSE "${DEB_ROOT}/usr/share/doc/sentinela/"
-
-            cat << EOF > "${DEB_ROOT}/DEBIAN/control"
-Package: sentinela
-Version: 0.3.0
-Section: utils
-Priority: optional
-Architecture: ${DEB_ARCH}
-Maintainer: Salvador Pontes <123838416+teizinh@users.noreply.github.com>
-Description: Sentinela - Honeypot & Network Intrusion Detection System
- Sistema leve de detecao de intrusoes (NIDS) e armadilhas honeypot em Rust.
-EOF
-
-            cat << 'EOF' > "${DEB_ROOT}/DEBIAN/postinst"
-#!/bin/sh
-set -e
-if command -v setcap >/dev/null 2>&1; then
-    setcap cap_net_raw+eip /usr/local/bin/sentinela 2>/dev/null || true
-fi
-EOF
-            chmod 755 "${DEB_ROOT}/DEBIAN/postinst"
-
-            dpkg-deb --build "${DEB_ROOT}" "${{ matrix.asset_name }}.deb"
-            shasum -a 256 "${{ matrix.asset_name }}.deb" > "${{ matrix.asset_name }}.deb.sha256"
-            rm -rf "${DEB_ROOT}"
-
-            # Para Linux x86_64, gera também pacote .rpm via alien
-            if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
-              sudo apt-get update && sudo apt-get install -y alien
-              alien --to-rpm --scripts "${{ matrix.asset_name }}.deb"
-              mv sentinela-*.rpm "${{ matrix.asset_name }}.rpm"
-              shasum -a 256 "${{ matrix.asset_name }}.rpm" > "${{ matrix.asset_name }}.rpm.sha256"
-            fi
-          fi
+          bash scripts/package-linux.sh target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.target }} ${{ matrix.asset_name }}
 
       - name: Package Release Assets (Windows - zip & NSIS Setup)
         if: matrix.archive_format == 'zip'
@@ -153,12 +100,12 @@ EOF
           Copy-Item "README.md" -Destination dist/
           Copy-Item "LICENSE" -Destination dist/
 
-          # 1. Zip Portátil
+          # 1. Zip Portatil
           Compress-Archive -Path dist/* -DestinationPath "${{ matrix.asset_name }}.zip" -Force
           $hashZip = (Get-FileHash -Algorithm SHA256 "${{ matrix.asset_name }}.zip").Hash.ToLower()
           "$hashZip  ${{ matrix.asset_name }}.zip" | Out-File -Encoding ascii "${{ matrix.asset_name }}.zip.sha256"
 
-          # 2. Instalador Gráfico Oficial NSIS (Setup Wizard)
+          # 2. Instalador Grafico Oficial NSIS (Setup Wizard)
           makensis scripts/installer.nsi
           $setupExe = "sentinela-windows-x64-setup.exe"
           $hashSetup = (Get-FileHash -Algorithm SHA256 $setupExe).Hash.ToLower()

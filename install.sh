@@ -136,16 +136,16 @@ else
     chmod 755 "$DEST_PATH"
 fi
 
-# 4. No Linux: Aplica Permissões Raw Sockets (CAP_NET_RAW)
+# 4. No Linux: Aplica Permissões Raw Sockets e Gestão de Rede (CAP_NET_RAW + CAP_NET_ADMIN)
 if [ "$OS" = "Linux" ]; then
     if command -v setcap >/dev/null 2>&1; then
-        echo "  • A configurar capacidade de sniffing raw (CAP_NET_RAW)..."
+        echo "  • A configurar capacidades de rede (CAP_NET_RAW + CAP_NET_ADMIN)..."
         if [ -n "$SUDO" ]; then
-            $SUDO setcap cap_net_raw+eip "$DEST_PATH" 2>/dev/null && \
-                echo "    ${GREEN}✓ Permissão CAP_NET_RAW atribuída (deteção SYN scan ativa para utilizadores comuns!)${NC}" || \
-                echo "    ${YELLOW}! Aviso: Não foi possível atribuir CAP_NET_RAW. O Sentinela funcionará normalmente via honeypot TCP.${NC}"
+            $SUDO setcap cap_net_raw,cap_net_admin+eip "$DEST_PATH" 2>/dev/null && \
+                echo "    ${GREEN}✓ Permissões CAP_NET_RAW e CAP_NET_ADMIN atribuídas (Deteção SYN scan e Killswitch ativos sem root!)${NC}" || \
+                echo "    ${YELLOW}! Aviso: Não foi possível atribuir capacidades completas. O Sentinela funcionará como honeypot TCP.${NC}"
         else
-            setcap cap_net_raw+eip "$DEST_PATH" 2>/dev/null || true
+            setcap cap_net_raw,cap_net_admin+eip "$DEST_PATH" 2>/dev/null || true
         fi
     fi
 fi

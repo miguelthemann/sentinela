@@ -239,62 +239,55 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
     let mut successes = 0;
 
     if isolate {
-        // 1. Tenta desativar conexões via NetworkManager
-        match Command::new("nmcli")
-            .args(["networking", "off"])
-            .output()
-        {
-            Ok(output) if output.status.success() => successes += 1,
-            Ok(output) => {
-                let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                errors.push(format!("nmcli networking off falhou: {}", err));
-            }
-            Err(e) => errors.push(format!("nmcli networking off falhou ao iniciar: {}", e)),
-        }
-
-        match Command::new("nmcli")
-            .args(["radio", "all", "off"])
-            .output()
-        {
-            Ok(output) if output.status.success() => successes += 1,
-            Ok(output) => {
-                let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                errors.push(format!("nmcli radio all off falhou: {}", err));
-            }
-            Err(e) => errors.push(format!("nmcli radio off falhou ao iniciar: {}", e)),
-        }
+        // 1. Tenta desativar conexões via NetworkManager se estiver presente no sistema
+        let _ = Command::new("nmcli").args(["networking", "off"]).output();
+        let _ = Command::new("nmcli").args(["radio", "all", "off"]).output();
 
         // 2. Tenta desligar links de rede físicos e lógicos via iproute2
         if let Ok(interfaces) = get_if_addrs() {
-            let mut iface_count = 0;
+            let mut seen_ifaces = std::collections::HashSet::new();
             for iface in interfaces {
-                if !iface.is_loopback() {
-                    iface_count += 1;
-                    match Command::new("ip")
-                        .args(["link", "set", "dev", &iface.name, "down"])
-                        .output()
-                    {
-                        Ok(output) if output.status.success() => successes += 1,
-                        Ok(output) => {
-                            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                            errors.push(format!("ip link set {} down falhou: {}", iface.name, err));
+                if !iface.is_loopback() && seen_ifaces.insert(iface.name.clone()) {
+                    let mut is_down = false;
+                    // Tenta execução direta do ip link set down
+                    if let Ok(output) = Command::new("ip").args(["link", "set", "dev", &iface.name, "down"]).output() {
+                        if output.status.success() {
+                            is_down = true;
+                            successes += 1;
                         }
-                        Err(e) => errors.push(format!("ip link set {} down falhou ao iniciar: {}", iface.name, e)),
+                    }
+
+                    // Se falhou (ex: utilizador sem permissões de root diretas), tenta via sudo não-interativo (-n)
+                    if !is_down {
+                        if let Ok(sudo_out) = Command::new("sudo").args(["-n", "ip", "link", "set", "dev", &iface.name, "down"]).output() {
+                            if sudo_out.status.success() {
+                                is_down = true;
+                                successes += 1;
+                            }
+                        }
+                    }
+
+                    if !is_down {
+                        errors.push(format!("Interface {}: permissão negada ao desativar link (requer sudo)", iface.name));
                     }
                 }
             }
-            if iface_count == 0 {
-                errors.push("Nenhuma interface externa detetada para isolamento".to_string());
-            }
-        } else {
-            errors.push("Falha ao enumerar interfaces de rede".to_string());
         }
 
-        // Se nenhuma camada teve sucesso ou se ocorreram erros críticos (ex.: falta de privilégios de root)
-        if successes == 0 || !errors.is_empty() {
+        // 3. Tenta bloquear adaptadores rádio via rfkill
+        let _ = Command::new("rfkill").args(["block", "all"]).output();
+
+        // Se nenhuma interface foi desligada com sucesso
+        if successes == 0 {
+            if errors.is_empty() {
+                errors.push("Nenhuma interface de rede externa detetada para isolamento".to_string());
+            } else {
+                errors.push("O Killswitch requer privilégios de root para desligar placas de rede (executa com: sudo ./sentinela)".to_string());
+            }
+
             let filename = crate::traps::get_log_filename();
             let err_log = format!(
-                "[{}] [FALHA  ] Killswitch: Isolamento de rede não é fiável!\nErros detalhados:\n• {}\n",
+                "[{}] [FALHA  ] Killswitch: Falha ao isolar rede!\nErros detalhados:\n• {}\n",
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
                 errors.join("\n• ")
             );
@@ -308,41 +301,28 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
         // Restauração completa de todas as camadas de rede:
         // 1. Levanta os links das placas de rede
         if let Ok(interfaces) = get_if_addrs() {
+            let mut seen_ifaces = std::collections::HashSet::new();
             for iface in interfaces {
-                if !iface.is_loopback() {
-                    match Command::new("ip")
-                        .args(["link", "set", "dev", &iface.name, "up"])
-                        .output()
-                    {
-                        Ok(output) if !output.status.success() => {
-                            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                            errors.push(format!("ip link set {} up falhou: {}", iface.name, err));
+                if !iface.is_loopback() && seen_ifaces.insert(iface.name.clone()) {
+                    let mut is_up = false;
+                    if let Ok(output) = Command::new("ip").args(["link", "set", "dev", &iface.name, "up"]).output() {
+                        if output.status.success() {
+                            is_up = true;
                         }
-                        Err(e) => errors.push(format!("ip link set {} up falhou: {}", iface.name, e)),
-                        _ => {}
+                    }
+                    if !is_up {
+                        let _ = Command::new("sudo").args(["-n", "ip", "link", "set", "dev", &iface.name, "up"]).output();
                     }
                 }
             }
         }
 
         // 2. Desbloqueia rfkill (Wi-Fi e Bluetooth)
-        let _ = Command::new("rfkill")
-            .args(["unblock", "all"])
-            .output();
+        let _ = Command::new("rfkill").args(["unblock", "all"]).output();
 
-        // 3. Ativa rádio Wi-Fi no NetworkManager
-        let _ = Command::new("nmcli")
-            .args(["radio", "all", "on"])
-            .output();
-
-        // 4. Ativa o subsistema de rede
-        let _ = Command::new("nmcli")
-            .args(["networking", "on"])
-            .output();
-
-        if !errors.is_empty() {
-            return Err(errors);
-        }
+        // 3. Ativa rádio e rede no NetworkManager (se disponível)
+        let _ = Command::new("nmcli").args(["radio", "all", "on"]).output();
+        let _ = Command::new("nmcli").args(["networking", "on"]).output();
     }
 
     Ok(())

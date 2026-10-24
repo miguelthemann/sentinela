@@ -205,23 +205,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                         KeyCode::Char('k') | KeyCode::Char('K') => {
                             let target = !killswitch_active;
-                            match network::toggle_network(target) {
-                                Ok(()) => {
-                                    killswitch_active = target;
-                                    killswitch_failed = false;
-                                }
-                                Err(errs) => {
-                                    killswitch_active = target;
-                                    killswitch_failed = true;
-                                    let msg = match lang {
-                                        Language::Pt => "Falha no Killswitch: Isolamento de rede não é fiável!",
-                                        Language::En => "Killswitch failed: Network isolation is not reliable!",
-                                    };
-                                    network::send_desktop_notification_raw(
-                                        "🚨 Sentinela: Killswitch",
-                                        &format!("{}\n{}", msg, errs.first().cloned().unwrap_or_default()),
-                                        "critical",
-                                    );
+                            if !target {
+                                // Desativa o killswitch e restaura a rede
+                                killswitch_active = false;
+                                killswitch_failed = false;
+                                let _ = network::toggle_network(false);
+                            } else {
+                                match network::toggle_network(true) {
+                                    Ok(()) => {
+                                        killswitch_active = true;
+                                        killswitch_failed = false;
+                                    }
+                                    Err(errs) => {
+                                        killswitch_active = true;
+                                        killswitch_failed = true;
+                                        let msg = match lang {
+                                            Language::Pt => "Falha no Killswitch: Requer permissões de root (sudo) para desligar interfaces!",
+                                            Language::En => "Killswitch failed: Root/sudo privileges required to shut down interfaces!",
+                                        };
+                                        network::send_desktop_notification_raw(
+                                            "[!] Sentinela: Killswitch",
+                                            &format!("{}\n{}", msg, errs.first().cloned().unwrap_or_default()),
+                                            "critical",
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -299,7 +306,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let (title, time_lbl, det_lbl, ip_lbl, top_ip_lbl, port_lbl, sev_lbl, log_lbl) = match lang {
         Language::Pt => (
-            "🛡️  RELATÓRIO DE SESSÃO - SENTINELA",
+            "[#]  RELATÓRIO DE SESSÃO - SENTINELA",
             "Tempo em Guarda",
             "Deteções Totais",
             "Invasores Únicos",
@@ -309,7 +316,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "Registo Diário",
         ),
         Language::En => (
-            "🛡️  SENTINELA SESSION AUDIT REPORT",
+            "[#]  SENTINELA SESSION AUDIT REPORT",
             "Active Uptime",
             "Total Alerts",
             "Unique IPs",
@@ -334,15 +341,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("\n\x1b[1;36m======================================================================\x1b[0m");
     println!("\x1b[1;32m                  {}                 \x1b[0m", title);
     println!("\x1b[1;36m======================================================================\x1b[0m");
-    println!(" ⏱️  {:<18} : \x1b[1m{:02}m {:02}s\x1b[0m", time_lbl, minutes, seconds);
-    println!(" 🎯 {:<18} : \x1b[1;33m{}\x1b[0m", det_lbl, total_detections_count);
-    println!(" 👾 {:<18} : \x1b[1m{}\x1b[0m", ip_lbl, unique_ips.len());
-    println!(" 🔥 {:<18} : \x1b[1;31m{}\x1b[0m", top_ip_lbl, top_ip_info);
-    println!(" 🚪 {:<18} : \x1b[1;31m{}\x1b[0m", port_lbl, top_port_info);
-    println!(" 🚨 {:<18} : {}", sev_lbl, sev_breakdown);
+    println!(" [*] {:<18} : \x1b[1m{:02}m {:02}s\x1b[0m", time_lbl, minutes, seconds);
+    println!(" [+] {:<18} : \x1b[1;33m{}\x1b[0m", det_lbl, total_detections_count);
+    println!(" [*] {:<18} : \x1b[1m{}\x1b[0m", ip_lbl, unique_ips.len());
+    println!(" [!] {:<18} : \x1b[1;31m{}\x1b[0m", top_ip_lbl, top_ip_info);
+    println!(" [>] {:<18} : \x1b[1;31m{}\x1b[0m", port_lbl, top_port_info);
+    println!(" [!] {:<18} : {}", sev_lbl, sev_breakdown);
     println!("----------------------------------------------------------------------");
-    println!(" 💻 SO / Kernel       : {} ({}) [{}]", sys_info.distro, sys_info.kernel, sys_info.arch);
-    println!(" 📁 {:<18} : \x1b[1;32m{}\x1b[0m", log_lbl, full_log_path);
+    println!(" [#] SO / Kernel       : {} ({}) [{}]", sys_info.distro, sys_info.kernel, sys_info.arch);
+    println!(" [#] {:<18} : \x1b[1;32m{}\x1b[0m", log_lbl, full_log_path);
     println!("\x1b[1;36m======================================================================\x1b[0m\n");
 
     Ok(())

@@ -68,24 +68,24 @@ pub fn render_ui(
         (
             Color::LightRed,
             match lang {
-                Language::Pt => "⚠️ FALHA ISOLAMENTO (NÃO FIÁVEL)",
-                Language::En => "⚠️ ISOLATION FAILED (UNRELIABLE)",
+                Language::Pt => "[!] FALHA ISOLAMENTO (SEM ROOT)",
+                Language::En => "[!] ISOLATION FAILED (NO ROOT)",
             },
         )
     } else if killswitch_active {
         (
             Color::Red,
             match lang {
-                Language::Pt => "⛔ ISOLADO (KILLSWITCH)",
-                Language::En => "⛔ ISOLATED (KILLSWITCH)",
+                Language::Pt => "[X] ISOLADO (KILLSWITCH)",
+                Language::En => "[X] ISOLATED (KILLSWITCH)",
             },
         )
     } else {
         (
             Color::Green,
             match lang {
-                Language::Pt => "✅ EM GUARDA",
-                Language::En => "✅ GUARD ACTIVE",
+                Language::Pt => "[OK] EM GUARDA",
+                Language::En => "[OK] GUARD ACTIVE",
             },
         )
     };
@@ -97,8 +97,8 @@ pub fn render_ui(
         }
     } else {
         match lang {
-            Language::Pt => format!("⚠️ Erro portas: {:?}", failed_traps),
-            Language::En => format!("⚠️ Port errors: {:?}", failed_traps),
+            Language::Pt => format!("[!] Erro portas: {:?}", failed_traps),
+            Language::En => format!("[!] Port errors: {:?}", failed_traps),
         }
     };
 
@@ -110,10 +110,10 @@ pub fn render_ui(
         + severity_stats.get("SWEEP").copied().unwrap_or(0);
 
     let scanner_label = match (scanner_active, lang) {
-        (true, Language::Pt) => "📡 Scanner RAW: ativo",
-        (true, Language::En) => "📡 RAW Scanner: active",
-        (false, Language::Pt) => "📡 Scanner RAW: sem root",
-        (false, Language::En) => "📡 RAW Scanner: no root",
+        (true, Language::Pt) => "RAW: ativo",
+        (true, Language::En) => "RAW: active",
+        (false, Language::Pt) => "RAW: sem root",
+        (false, Language::En) => "RAW: no root",
     };
 
     let filter_label = severity_filter.label(lang);
@@ -122,12 +122,12 @@ pub fn render_ui(
 
     let header_info = match lang {
         Language::Pt => format!(
-            " IPs: {} | Log: {}\n Estado: {} | {} | {} | 🔴 {} 🟠 {} 🔵 {} 🟣 {} var | Filtro: {} | +Visada: {}",
+            " IPs: {} | Log: {}\n Estado: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filtro: {} | +Visada: {}",
             local_ips, log_name, status_label, traps_status, scanner_label,
             crit, med, alrt, scans, filter_label, top_port
         ),
         Language::En => format!(
-            " IPs: {} | Log: {}\n Status: {} | {} | {} | 🔴 {} 🟠 {} 🔵 {} 🟣 {} scans | Filter: {} | Top: {}",
+            " IPs: {} | Log: {}\n Status: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filter: {} | Top: {}",
             local_ips, log_name, status_label, traps_status, scanner_label,
             crit, med, alrt, scans, filter_label, top_port
         ),
@@ -209,9 +209,9 @@ pub fn render_ui(
             let risk_color = match item.severity.as_str() {
                 "CRÍTICO" => Color::Red,
                 "SWEEP" => Color::Red,       // varrimento amplo = tão sério quanto crítico
-                "MÉDIO" => Color::Rgb(255, 140, 0),
+                "MÉDIO" => Color::Yellow,
                 "SCAN" => Color::Magenta,
-                _ => Color::Yellow,
+                _ => Color::Cyan,
             };
 
             // Localização: "Cidade, País" se disponível, senão só país
@@ -301,16 +301,16 @@ pub fn render_ui(
         let (w_title, w_body) = if warnings.is_empty() {
             let (title, text) = match lang {
                 Language::Pt => (
-                    " 🛡️ AUDITORIA DE SEGURANÇA LOCAL ",
-                    "\n✅ NENHUMA PORTA CRÍTICA DESPROTEGIDA DETETADA!\n\n\
+                    " [#] AUDITORIA DE SEGURANÇA LOCAL ",
+                    "\n[OK] NENHUMA PORTA CRÍTICA DESPROTEGIDA DETETADA!\n\n\
                      O kernel não encontrou serviços inseguros (Telnet, SMB, Redis, BDs externas)\n\
                      a escutar abertamente em 0.0.0.0.\n\n\
                      As tuas portas armadilha estão isoladas e a funcionar como honeypot.\n\n\
                      [Prime 'W' ou 'ESC' para regressar ao painel]",
                 ),
                 Language::En => (
-                    " 🛡️ LOCAL SECURITY AUDIT ",
-                    "\n✅ NO CRITICAL EXPOSED PORTS DETECTED!\n\n\
+                    " [#] LOCAL SECURITY AUDIT ",
+                    "\n[OK] NO CRITICAL EXPOSED PORTS DETECTED!\n\n\
                      Kernel inspection found no unencrypted services (Telnet, SMB, Redis, external DBs)\n\
                      listening openly on 0.0.0.0.\n\n\
                      Your trap ports are functioning securely as honeypots.\n\n\
@@ -320,8 +320,8 @@ pub fn render_ui(
             (title, text.to_string())
         } else {
             let mut report = match lang {
-                Language::Pt => String::from("⚠️ PORTAS EM RISCO DETETADAS NESTE SISTEMA:\n-------------------------------------------------------------\n"),
-                Language::En => String::from("⚠️ VULNERABLE OPEN PORTS DETECTED ON HOST:\n-------------------------------------------------------------\n"),
+                Language::Pt => String::from("[!] PORTAS EM RISCO DETETADAS NESTE SISTEMA:\n-------------------------------------------------------------\n"),
+                Language::En => String::from("[!] VULNERABLE OPEN PORTS DETECTED ON HOST:\n-------------------------------------------------------------\n"),
             };
 
             for w in warnings {
@@ -337,8 +337,8 @@ pub fn render_ui(
             }
 
             let t = match lang {
-                Language::Pt => " ⚠️ RELATÓRIO DE AUDITORIA DE PORTAS ",
-                Language::En => " ⚠️ PORT AUDIT WARNINGS ",
+                Language::Pt => " [!] RELATÓRIO DE AUDITORIA DE PORTAS ",
+                Language::En => " [!] PORT AUDIT WARNINGS ",
             };
             (t, report)
         };
@@ -370,7 +370,7 @@ pub fn render_ui(
 
         let (modal_title, modal_body) = match lang {
             Language::Pt => (
-                " 📖 MANUAL DE OPERAÇÃO - SENTINELA ",
+                " [#] MANUAL DE OPERAÇÃO - SENTINELA ",
                 format!(
                     "SENTINELA HIDS & HONEYPOT\n\
                      -------------------------------------------------------------\n\
@@ -395,13 +395,13 @@ pub fn render_ui(
                        ./sentinela 2222 8080 9999\n\n\
                      • INDICADORES:\n\
                        * após o IP = mesmo atacante visto múltiplas vezes (coluna Hits).\n\
-                       🔴 Crítico  🟠 Médio  🔵 Alerta  (contadores no cabeçalho)\n\n\
+                       CRIT: Crítico  |  MED: Médio  |  ALRT: Alerta  |  SCAN: Varrimento\n\n\
                      [Prime 'I' ou 'ESC' para voltar ao painel]",
                     trap_ports_str
                 ),
             ),
             Language::En => (
-                " 📖 OPERATION MANUAL - SENTINELA ",
+                " [#] OPERATION MANUAL - SENTINELA ",
                 format!(
                     "SENTINELA HIDS & HONEYPOT\n\
                      -------------------------------------------------------------\n\
@@ -426,7 +426,7 @@ pub fn render_ui(
                        ./sentinela 2222 8080 9999\n\n\
                      • INDICATORS:\n\
                        * after IP = same attacker seen multiple times (Hits column).\n\
-                       🔴 Critical  🟠 Medium  🔵 Alert  (live counters in header)\n\n\
+                       CRIT: Critical  |  MED: Medium  |  ALRT: Alert  |  SCAN: Scan/Sweep\n\n\
                      [Press 'I' or 'ESC' to return]",
                     trap_ports_str
                 ),

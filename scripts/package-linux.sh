@@ -69,7 +69,7 @@ cat << 'EOF' > "${DEB_ROOT}/DEBIAN/postinst"
 #!/bin/sh
 set -e
 if command -v setcap >/dev/null 2>&1; then
-    setcap cap_net_raw+eip /usr/local/bin/sentinela 2>/dev/null || true
+    setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/sentinela 2>/dev/null || true
 fi
 EOF
 chmod 755 "${DEB_ROOT}/DEBIAN/postinst"

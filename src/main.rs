@@ -101,6 +101,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut port_stats: HashMap<u16, usize> = HashMap::new();
     let mut severity_stats: HashMap<String, usize> = HashMap::new();
 
+    // Garante limpeza preventiva de quaisquer regras de firewall residuais no arranque (Linux)
+    #[cfg(target_os = "linux")]
+    {
+        let _ = network::toggle_network(false);
+    }
+
     loop {
         // Verifica se recebeu SIGINT (Ctrl+C) em segundo plano
         if sigint_rx.try_recv().is_ok() {
@@ -207,9 +213,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             let target = !killswitch_active;
                             if !target {
                                 // Desativa o killswitch e restaura a rede
-                                killswitch_active = false;
-                                killswitch_failed = false;
-                                let _ = network::toggle_network(false);
+                                match network::toggle_network(false) {
+                                    Ok(()) => {
+                                        killswitch_active = false;
+                                        killswitch_failed = false;
+                                    }
+                                    Err(_) => {
+                                        killswitch_active = false;
+                                        killswitch_failed = true;
+                                    }
+                                }
                             } else {
                                 match network::toggle_network(true) {
                                     Ok(()) => {
@@ -220,8 +233,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         killswitch_active = true;
                                         killswitch_failed = true;
                                         let msg = match lang {
-                                            Language::Pt => "Falha no Killswitch: Requer permissões de root (sudo) para desligar interfaces!",
-                                            Language::En => "Killswitch failed: Root/sudo privileges required to shut down interfaces!",
+                                            Language::Pt => "Falha no Killswitch: Requer privilégios de root (sudo)!",
+                                            Language::En => "Killswitch failed: Root/sudo privileges required!",
                                         };
                                         network::send_desktop_notification_raw(
                                             "[!] Sentinela: Killswitch",
@@ -233,9 +246,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             }
                         }
                         KeyCode::Char('r') | KeyCode::Char('R') => {
-                            killswitch_active = false;
-                            killswitch_failed = false;
-                            let _ = network::toggle_network(false);
+                            match network::toggle_network(false) {
+                                Ok(()) => {
+                                    killswitch_active = false;
+                                    killswitch_failed = false;
+                                }
+                                Err(_) => {
+                                    killswitch_active = false;
+                                    killswitch_failed = true;
+                                }
+                            }
                         }
                         // Filtro de severidade
                         KeyCode::Char('f') | KeyCode::Char('F') => {

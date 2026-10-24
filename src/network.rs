@@ -229,60 +229,99 @@ pub async fn inspect_ip(ip: IpAddr) -> (String, String, String) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn run_cmd(cmd: &str, args: &[&str]) -> bool {
+    // 1. Tenta execução direta (processo com privilégios de root ou capabilities)
+    if let Ok(output) = Command::new(cmd).args(args).output() {
+        if output.status.success() {
+            return true;
+        }
+    }
+
+    // 2. Tenta via sudo não-interativo (-n) caso o utilizador tenha permissões sudoers
+    let mut sudo_args = vec!["-n", cmd];
+    sudo_args.extend_from_slice(args);
+    if let Ok(output) = Command::new("sudo").args(&sudo_args).output() {
+        if output.status.success() {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(target_os = "linux")]
+pub fn get_all_linux_interfaces() -> Vec<String> {
+    let mut ifaces = Vec::new();
+    if let Ok(entries) = fs::read_dir("/sys/class/net") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name != "lo" {
+                ifaces.push(name);
+            }
+        }
+    }
+    // Fallback para get_if_addrs caso /sys não esteja acessível
+    if ifaces.is_empty() {
+        if let Ok(addrs) = get_if_addrs() {
+            for iface in addrs {
+                if !iface.is_loopback() && !ifaces.contains(&iface.name) {
+                    ifaces.push(iface.name);
+                }
+            }
+        }
+    }
+    ifaces
+}
+
 /// Altera o estado da rede (isolamento / restauro).
-/// Captura os códigos de retorno dos comandos de sistema. Se o isolamento falhar,
-/// regista os erros específicos no ficheiro de log e devolve `Err(erros)` para que
-/// a interface gráfica e o utilizador sejam notificados de que o isolamento falhou.
+/// No Linux, utiliza prioritariamente regras Netfilter (iptables / ip6tables) para bloquear 100%
+/// do tráfego de entrada e saída. Isto garante o isolamento absoluto sem desligar as interfaces
+/// físicas, preservando as concessões DHCP, rotas predeterminadas (gateway) e endereços IP.
+/// Caso o iptables não esteja disponível, recorre ao desligamento dos links físicos (ip link set down).
+/// No restauro, remove as regras de firewall, garante que todas as interfaces de /sys/class/net/
+/// estão UP, e sinaliza a renovação de DHCP/rotas (compatível com OpenRC/Gentoo, systemd e NetworkManager).
 #[cfg(target_os = "linux")]
 pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     let mut successes = 0;
 
     if isolate {
-        // 1. Tenta desativar conexões via NetworkManager se estiver presente no sistema
-        let _ = Command::new("nmcli").args(["networking", "off"]).output();
-        let _ = Command::new("nmcli").args(["radio", "all", "off"]).output();
+        // --- 1. ISOLAMENTO VIA FIREWALL (MÉTODO PRIMÁRIO) ---
+        // Bloqueia todo o tráfego que não seja loopback local (lo)
+        let ipt_in = run_cmd("iptables", &["-I", "INPUT", "1", "!", "-i", "lo", "-j", "DROP"]);
+        let ipt_out = run_cmd("iptables", &["-I", "OUTPUT", "1", "!", "-o", "lo", "-j", "DROP"]);
+        let _ = run_cmd("ip6tables", &["-I", "INPUT", "1", "!", "-i", "lo", "-j", "DROP"]);
+        let _ = run_cmd("ip6tables", &["-I", "OUTPUT", "1", "!", "-o", "lo", "-j", "DROP"]);
 
-        // 2. Tenta desligar links de rede físicos e lógicos via iproute2
-        if let Ok(interfaces) = get_if_addrs() {
-            let mut seen_ifaces = std::collections::HashSet::new();
-            for iface in interfaces {
-                if !iface.is_loopback() && seen_ifaces.insert(iface.name.clone()) {
-                    let mut is_down = false;
-                    // Tenta execução direta do ip link set down
-                    if let Ok(output) = Command::new("ip").args(["link", "set", "dev", &iface.name, "down"]).output() {
-                        if output.status.success() {
-                            is_down = true;
-                            successes += 1;
-                        }
-                    }
-
-                    // Se falhou (ex: utilizador sem permissões de root diretas), tenta via sudo não-interativo (-n)
-                    if !is_down {
-                        if let Ok(sudo_out) = Command::new("sudo").args(["-n", "ip", "link", "set", "dev", &iface.name, "down"]).output() {
-                            if sudo_out.status.success() {
-                                is_down = true;
-                                successes += 1;
-                            }
-                        }
-                    }
-
-                    if !is_down {
-                        errors.push(format!("Interface {}: permissão negada ao desativar link (requer sudo)", iface.name));
-                    }
-                }
-            }
+        let mut fw_active = false;
+        if ipt_in || ipt_out {
+            fw_active = true;
+            successes += 1;
         }
 
-        // 3. Tenta bloquear adaptadores rádio via rfkill
-        let _ = Command::new("rfkill").args(["block", "all"]).output();
+        // Bloqueia rádio Wi-Fi/Bluetooth via rfkill
+        let _ = run_cmd("rfkill", &["block", "all"]);
 
-        // Se nenhuma interface foi desligada com sucesso
+        // --- 2. FALLBACK FÍSICO: SE O FIREWALL NÃO PUDER SER ATIVADO ---
+        if !fw_active {
+            let ifaces = get_all_linux_interfaces();
+            for iface in &ifaces {
+                if run_cmd("ip", &["link", "set", "dev", iface, "down"]) {
+                    successes += 1;
+                } else {
+                    errors.push(format!("Interface {}: permissão negada ao desativar link (requer sudo)", iface));
+                }
+            }
+            let _ = run_cmd("nmcli", &["networking", "off"]);
+            let _ = run_cmd("nmcli", &["radio", "all", "off"]);
+        }
+
         if successes == 0 {
             if errors.is_empty() {
-                errors.push("Nenhuma interface de rede externa detetada para isolamento".to_string());
+                errors.push("Nenhuma interface de rede ou firewall disponível para isolamento".to_string());
             } else {
-                errors.push("O Killswitch requer privilégios de root para desligar placas de rede (executa com: sudo ./sentinela)".to_string());
+                errors.push("O Killswitch requer privilégios de root para isolar a rede (executa com: sudo ./sentinela)".to_string());
             }
 
             let filename = crate::traps::get_log_filename();
@@ -298,31 +337,39 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
             return Err(errors);
         }
     } else {
-        // Restauração completa de todas as camadas de rede:
-        // 1. Levanta os links das placas de rede
-        if let Ok(interfaces) = get_if_addrs() {
-            let mut seen_ifaces = std::collections::HashSet::new();
-            for iface in interfaces {
-                if !iface.is_loopback() && seen_ifaces.insert(iface.name.clone()) {
-                    let mut is_up = false;
-                    if let Ok(output) = Command::new("ip").args(["link", "set", "dev", &iface.name, "up"]).output() {
-                        if output.status.success() {
-                            is_up = true;
-                        }
-                    }
-                    if !is_up {
-                        let _ = Command::new("sudo").args(["-n", "ip", "link", "set", "dev", &iface.name, "up"]).output();
-                    }
-                }
+        // --- RESTAURO COMPLETO DA REDE ---
+        // 1. Remove quaisquer regras DROP adicionadas pelo Sentinela
+        for _ in 0..5 {
+            let d1 = run_cmd("iptables", &["-D", "INPUT", "!", "-i", "lo", "-j", "DROP"]);
+            let d2 = run_cmd("iptables", &["-D", "OUTPUT", "!", "-o", "lo", "-j", "DROP"]);
+            let d3 = run_cmd("ip6tables", &["-D", "INPUT", "!", "-i", "lo", "-j", "DROP"]);
+            let d4 = run_cmd("ip6tables", &["-D", "OUTPUT", "!", "-o", "lo", "-j", "DROP"]);
+            if !d1 && !d2 && !d3 && !d4 {
+                break;
             }
         }
 
-        // 2. Desbloqueia rfkill (Wi-Fi e Bluetooth)
-        let _ = Command::new("rfkill").args(["unblock", "all"]).output();
+        // 2. Levanta links de todas as interfaces listadas em /sys/class/net/
+        // CRÍTICO: Nunca usar get_if_addrs() porque interfaces DOWN perdem os IPs e são ignoradas!
+        let ifaces = get_all_linux_interfaces();
+        for iface in &ifaces {
+            let _ = run_cmd("ip", &["link", "set", "dev", iface, "up"]);
+        }
 
-        // 3. Ativa rádio e rede no NetworkManager (se disponível)
-        let _ = Command::new("nmcli").args(["radio", "all", "on"]).output();
-        let _ = Command::new("nmcli").args(["networking", "on"]).output();
+        // 3. Desbloqueia rádio Wi-Fi/Bluetooth via rfkill
+        let _ = run_cmd("rfkill", &["unblock", "all"]);
+
+        // 4. Reativa conectividade no NetworkManager (se instalado)
+        let _ = run_cmd("nmcli", &["radio", "all", "on"]);
+        let _ = run_cmd("nmcli", &["networking", "on"]);
+
+        // 5. Restauração de IP e rotas (Gentoo / OpenRC / systemd / dhcpcd)
+        let _ = run_cmd("dhcpcd", &["-n"]);
+        for iface in &ifaces {
+            let _ = run_cmd("rc-service", &["--ifexists", &format!("net.{}", iface), "restart"]);
+        }
+        let _ = run_cmd("rc-service", &["--ifexists", "dhcpcd", "restart"]);
+        let _ = run_cmd("networkctl", &["renew"]);
     }
 
     Ok(())

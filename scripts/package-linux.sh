@@ -12,6 +12,15 @@ fi
 
 VERSION="0.3.0"
 
+calc_sha256() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file"
+    else
+        shasum -a 256 "$file"
+    fi
+}
+
 # 1. Empacota Tarball (.tar.gz)
 mkdir -p dist
 cp "$BIN_PATH" dist/sentinela
@@ -21,7 +30,7 @@ cp LICENSE dist/
 chmod +x dist/sentinela dist/install.sh
 
 tar -czf "${ASSET_NAME}.tar.gz" -C dist sentinela install.sh README.md LICENSE
-shasum -a 256 "${ASSET_NAME}.tar.gz" > "${ASSET_NAME}.tar.gz.sha256"
+calc_sha256 "${ASSET_NAME}.tar.gz" > "${ASSET_NAME}.tar.gz.sha256"
 
 # Se não for Linux (ex.: macOS), conclui após gerar o tarball
 if [ "$(uname -s)" != "Linux" ]; then
@@ -67,7 +76,7 @@ chmod 755 "${DEB_ROOT}/DEBIAN/postinst"
 
 if command -v dpkg-deb >/dev/null 2>&1; then
     dpkg-deb --build "${DEB_ROOT}" "${ASSET_NAME}.deb"
-    shasum -a 256 "${ASSET_NAME}.deb" > "${ASSET_NAME}.deb.sha256"
+    calc_sha256 "${ASSET_NAME}.deb" > "${ASSET_NAME}.deb.sha256"
 fi
 rm -rf "$DEB_ROOT"
 
@@ -77,7 +86,7 @@ if [ "$TARGET_NAME" = "x86_64-unknown-linux-gnu" ] && [ -f "${ASSET_NAME}.deb" ]
         alien --to-rpm --scripts "${ASSET_NAME}.deb"
         mv sentinela-*.rpm "${ASSET_NAME}.rpm" 2>/dev/null || true
         if [ -f "${ASSET_NAME}.rpm" ]; then
-            shasum -a 256 "${ASSET_NAME}.rpm" > "${ASSET_NAME}.rpm.sha256"
+            calc_sha256 "${ASSET_NAME}.rpm" > "${ASSET_NAME}.rpm.sha256"
         fi
     fi
 fi

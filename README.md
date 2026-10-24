@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/Language-Rust-orange.svg" alt="Rust">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui">
-  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg" alt="Platforms">
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
   <img src="https://img.shields.io/badge/Version-0.3.0-green.svg" alt="Version">
 </p>
 
@@ -16,10 +16,10 @@
 
 ## ⚡ Instalação Rápida (Releases Oficiais)
 
-O Sentinela dispõe de instaladores automatizados e binários portáteis pré-compilados para os principais sistemas operativos:
+O Sentinela dispõe de instaladores automatizados e binários pré-compilados para **Linux** e **Windows**:
 
-### 🐧 Linux & 🍎 macOS (Terminal)
-Executa o comando de instalação num terminal (deteta a arquitetura `x86_64` ou `arm64`, instala em `/usr/local/bin` e configura `CAP_NET_RAW` no Linux automaticamente):
+### 🐧 Linux (Terminal)
+Executa o comando de instalação num terminal (instala em `/usr/local/bin` e configura `CAP_NET_RAW` automaticamente):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/teizinh/sentinela/main/install.sh | bash
 ```
@@ -35,14 +35,10 @@ irm https://raw.githubusercontent.com/teizinh/sentinela/main/scripts/install.ps1
 | Sistema Operativo | Formato / Tipo | Pacote Oficial |
 | :--- | :--- | :--- |
 | **Windows** | **Instalador Gráfico Oficial (NSIS Setup Wizard)** | [⬇️ `sentinela-windows-x64-setup.exe`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-windows-x64-setup.exe) |
-| **Windows** | Arquivo Zip Portátil | [`sentinela-windows-x64.zip`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-windows-x64.zip) |
+| **Windows** | Arquivo Zip Portátil + scripts PowerShell | [`sentinela-windows-x64.zip`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-windows-x64.zip) |
 | **Linux (Debian / Ubuntu / Mint)** | **Pacote Nativo `.deb` (x86_64)** | [⬇️ `sentinela-linux-x86_64.deb`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.deb) |
 | **Linux (Fedora / RHEL / openSUSE)** | **Pacote Nativo `.rpm` (x86_64)** | [⬇️ `sentinela-linux-x86_64.rpm`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.rpm) |
-| **Linux (Raspberry Pi / ARM64)** | Pacote Nativo `.deb` (arm64) | [`sentinela-linux-arm64.deb`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-arm64.deb) |
 | **Linux (Universal)** | Arquivo Tarball + `install.sh` (x86_64) | [`sentinela-linux-x86_64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.tar.gz) |
-| **Linux (Universal)** | Arquivo Tarball + `install.sh` (arm64) | [`sentinela-linux-arm64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-arm64.tar.gz) |
-| **macOS (Apple Silicon)** | Tarball M1 / M2 / M3 / M4 (arm64) | [`sentinela-macos-arm64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-macos-arm64.tar.gz) |
-| **macOS (Intel)** | Tarball 64-bit (x86_64) | [`sentinela-macos-x64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-macos-x64.tar.gz) |
 
 ---
 

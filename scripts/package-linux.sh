@@ -23,6 +23,11 @@ chmod +x dist/sentinela dist/install.sh
 tar -czf "${ASSET_NAME}.tar.gz" -C dist sentinela install.sh README.md LICENSE
 shasum -a 256 "${ASSET_NAME}.tar.gz" > "${ASSET_NAME}.tar.gz.sha256"
 
+# Se não for Linux (ex.: macOS), conclui após gerar o tarball
+if [ "$(uname -s)" != "Linux" ]; then
+    exit 0
+fi
+
 # 2. Empacota Debian (.deb)
 DEB_ARCH="amd64"
 if [ "$TARGET_NAME" = "aarch64-unknown-linux-gnu" ]; then

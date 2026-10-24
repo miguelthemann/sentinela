@@ -47,8 +47,8 @@ jobs:
             artifact_name: sentinela
             asset_name: sentinela-macos-arm64
             archive_format: tar.gz
-          # macOS Intel (x86_64)
-          - os: macos-13
+          # macOS Intel (x86_64 compilado em macos-latest)
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: sentinela
             asset_name: sentinela-macos-x64
@@ -106,7 +106,12 @@ jobs:
           "$hashZip  ${{ matrix.asset_name }}.zip" | Out-File -Encoding ascii "${{ matrix.asset_name }}.zip.sha256"
 
           # 2. Instalador Grafico Oficial NSIS (Setup Wizard)
-          makensis scripts/installer.nsi
+          choco install -y nsis
+          $makensisPath = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (-not (Test-Path $makensisPath)) {
+            $makensisPath = "makensis"
+          }
+          & $makensisPath scripts/installer.nsi
           $setupExe = "sentinela-windows-x64-setup.exe"
           $hashSetup = (Get-FileHash -Algorithm SHA256 $setupExe).Hash.ToLower()
           "$hashSetup  $setupExe" | Out-File -Encoding ascii "$setupExe.sha256"

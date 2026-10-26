@@ -62,6 +62,15 @@ sentinela 22 3306 5432 9200
 ### Emergency killswitch
 Press `k` to drop all network traffic instantly. On Linux this inserts blocking rules into `iptables`/`ip6tables` and calls `rfkill block all`. Press `k` again to restore everything. If Sentinela exits while the killswitch is active, it cleans up automatically.
 
+### Deep incident forensic inspection & reverse DNS
+Press `Enter` on any highlighted incident to open a full forensic modal showing detailed telemetry: source IP, async Reverse DNS (rDNS / PTR hostname), threat severity, hit counts, geolocation (country and city), ISP entity, target port, and recommended mitigation command.
+
+### Surgical per-IP firewall ban & unban
+Press `b` in the dashboard or within the inspection modal to immediately block the attacker IP with an active Netfilter rule (`iptables -I INPUT 1 -s <IP> -j DROP`). Banned addresses are marked with a distinct `[BAN]` badge in the incident table. Pressing `b` again unbans the IP. All surgical bans are cleaned up automatically on exit to prevent orphaned rules.
+
+### Threat intelligence export
+Press `e` at any time to dump the complete session threat intelligence to both `sentinela_report_YYYY-MM-DD_HH-MM-SS.json` and `.csv` files. Includes system metadata, active trap ports, unique attacker count, banned IPs, and full incident histories.
+
 ### GeoIP lookup
 Every detected IP is looked up against the [ip-api.com](http://ip-api.com) service. Country, city and ISP are shown in the dashboard and written to the log. Results are cached for the session; failed lookups retry after two minutes.
 
@@ -103,7 +112,10 @@ The UI language switches between Portuguese and English at runtime. It is auto-d
 
 | Key | Action |
 |---|---|
-| `q` / `Ctrl+C` | Exit |
+| `q` / `Ctrl+C` | Exit (cleans up any active killswitch and temporary bans) |
+| `Enter` | Open deep forensic inspection modal for selected incident |
+| `b` | Surgically ban / unban selected attacker IP (DROP firewall rule) |
+| `e` | Export session Threat Intel report to JSON and CSV |
 | `i` | Open / close help modal |
 | `w` | Open / close port security audit |
 | `l` | Toggle language (PT / EN) |

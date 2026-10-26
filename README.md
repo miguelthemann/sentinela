@@ -1,145 +1,198 @@
-# 🛡️ Sentinela
+# Sentinela
 
 <p align="center">
-  <strong>Sistema Leve de Deteção de Intrusões (NIDS), Monitorização de Portas e Armadilhas de Rede em Rust</strong>
+  <strong>Network Intrusion Detection, Honeypot Traps and Traffic Monitor — written in Rust</strong>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Language-Rust-orange.svg" alt="Rust">
-  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
-  <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui">
-  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
-  <img src="https://img.shields.io/badge/Version-0.3.0-green.svg" alt="Version">
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
+  <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui TUI">
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg" alt="Platforms">
+  <img src="https://img.shields.io/badge/Version-0.3.2-green.svg" alt="Version 0.3.2">
 </p>
 
 ---
 
-## ⚡ Instalação Rápida (Releases Oficiais)
+Sentinela runs on your machine and watches your network interfaces in real time. It detects port scans (including Nmap SYN stealth, NULL, FIN and XMAS scans), catches anything that connects to configurable honeypot ports, and lets you cut all network access instantly if needed. Everything is visible through a terminal dashboard that works from a desktop down to an SSH session on a phone.
 
-O Sentinela dispõe de instaladores automatizados e binários pré-compilados para **Linux** e **Windows**:
+It does not require a separate server, database or cloud account. It runs as a single binary.
 
-### 🐧 Linux (Terminal)
-Executa o comando de instalação num terminal (instala em `/usr/local/bin` e configura `CAP_NET_RAW` automaticamente):
+---
+
+## Install
+
+**Linux / macOS:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/teizinh/sentinela/main/install.sh | bash
 ```
 
-### 🪟 Windows 10/11 (PowerShell)
-Executa na PowerShell (instala em `%LOCALAPPDATA%\Programs\Sentinela`, adiciona ao `PATH` e cria atalho no Ambiente de Trabalho):
+**Windows (PowerShell):**
 ```powershell
 irm https://raw.githubusercontent.com/teizinh/sentinela/main/scripts/install.ps1 | iex
 ```
 
-### 📦 Descarregamento Direto das Releases
+### Pre-built packages
 
-| Sistema Operativo | Formato / Tipo | Pacote Oficial |
-| :--- | :--- | :--- |
-| **Windows** | **Instalador Gráfico Oficial (NSIS Setup Wizard)** | [⬇️ `sentinela-windows-x64-setup.exe`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-windows-x64-setup.exe) |
-| **Windows** | Arquivo Zip Portátil + scripts PowerShell | [`sentinela-windows-x64.zip`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-windows-x64.zip) |
-| **Linux (Debian / Ubuntu / Mint)** | **Pacote Nativo `.deb` (x86_64)** | [⬇️ `sentinela-linux-x86_64.deb`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.deb) |
-| **Linux (Fedora / RHEL / openSUSE)** | **Pacote Nativo `.rpm` (x86_64)** | [⬇️ `sentinela-linux-x86_64.rpm`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.rpm) |
-| **Linux (Universal)** | Arquivo Tarball + `install.sh` (x86_64) | [`sentinela-linux-x86_64.tar.gz`](https://github.com/teizinh/sentinela/releases/latest/download/sentinela-linux-x86_64.tar.gz) |
+| Platform | Format | File |
+|---|---|---|
+| Linux (Debian / Ubuntu / Mint) | `.deb` | `sentinela-linux-x86_64.deb` |
+| Linux (Fedora / RHEL / openSUSE) | `.rpm` | `sentinela-linux-x86_64.rpm` |
+| Linux (universal) | `.tar.gz` | `sentinela-linux-x86_64.tar.gz` |
+| Windows | Installer | `sentinela-windows-x64-setup.exe` |
+| Windows | Portable zip | `sentinela-windows-x64.zip` |
 
----
-
-## 📖 Visão Geral
-
-O **Sentinela** é uma ferramenta de cibersegurança e monitorização de tráfego de rede concebida em **Rust**. Opera em tempo real através de uma interface interativa de terminal (**TUI - Terminal User Interface**) desenvolvida com a biblioteca **Ratatui**.
-
-O sistema atua como sentinela passiva e ativa na interface de rede da máquina, identificando varrimentos de portas suspeitos (incluindo *SYN stealth scans* do Nmap), disponibilizando armadilhas de rede (*honeypot trap ports*) e permitindo o isolamento imediato da rede através de um *Emergency Killswitch*.
+All releases are on the [Releases page](https://github.com/teizinh/sentinela/releases). Each file has a corresponding `.sha256` checksum. A combined `SHA256SUMS.txt` is included in every release.
 
 ---
 
-## ✨ Funcionalidades Principais
+## What it does
 
-* 🔍 **Deteção de Port Scans em Tempo Real:** Captura pacotes brutos (*raw sockets*) via `pnet` ao nível da camada de rede, detetando varrimentos furtivos (`nmap -sS`, masscan) antes de a ligação TCP de 3 vias se completar.
-* 🪤 **Armadilhas de Rede Configuráveis (*Honeypot Trap Ports*):** Permite abrir portas armadilhadas (ex: SSH em `2222`, HTTP em `8080`, RDP em `3389`). Qualquer ligação a estas portas gera de imediato um alerta de severidade elevada com identificação do IP intruso.
-* 🖥️ **Dashboard Interativo em Terminal (Ratatui TUI):** Visualização estética e responsiva em tempo real com taxas de pacotes/segundo, lista cronológica de incidentes com códigos de cores, estado das portas e interfaces ativas.
-* 🛑 **Emergency Network Killswitch:** Permite cortar ou reativar instantaneamente as interfaces de rede através de um único atalho de teclado (`k`), útil para conter exfiltração de dados ou varrimentos agressivos.
-* 📊 **Classificação Semântica de Incidentes:** Alertas distribuídos por 4 patamares de gravidade: `Baixa`, `Média`, `Alta` e `Crítica`.
-* 📝 **Registo e Auditoria Persistente:** Criação automática de ficheiros de log diários com carimbo temporal (`sentinela_YYYY-MM-DD.log`).
-* 🌐 **Suporte Bilingue:** Alternância instantânea entre **Português (PT)** e **Inglês (EN)** premindo a tecla `l`.
-* ⚡ **Performance e Baixo Consumo:** Desenvolvido 100% em Rust assíncrono com o runtime `tokio`, com consumo mínimo de memória RAM e CPU.
+### Port scan detection
+On Linux, Sentinela reads raw packets directly from the network interface using `pnet` (requires `CAP_NET_RAW`). This lets it catch SYN stealth scans before the TCP handshake completes — the kind that `nmap -sS` and `masscan` use specifically to avoid leaving traces in application logs. It also detects NULL, FIN and XMAS scans. If a single IP hits five or more distinct ports within five seconds, it is flagged as a port sweep.
+
+On Windows and macOS — or on Linux without the raw socket capability — the scanner degrades gracefully. Honeypot traps continue to work normally.
+
+### Honeypot trap ports
+Sentinela binds a set of ports and waits. Any incoming connection triggers an alert. Default trap ports: `2121`, `2222`, `2323`, `8080`, `8443`. You can pass your own list at startup:
+```bash
+sentinela 22 3306 5432 9200
+```
+
+### Emergency killswitch
+Press `k` to drop all network traffic instantly. On Linux this inserts blocking rules into `iptables`/`ip6tables` and calls `rfkill block all`. Press `k` again to restore everything. If Sentinela exits while the killswitch is active, it cleans up automatically.
+
+### GeoIP lookup
+Every detected IP is looked up against the [ip-api.com](http://ip-api.com) service. Country, city and ISP are shown in the dashboard and written to the log. Results are cached for the session; failed lookups retry after two minutes.
+
+### Audit logs
+Incidents are written to daily log files (`sentinela_YYYY-MM-DD.log`) in the working directory. The format is plain text, one line per event. When an IP is seen again, the hit counter on its log line is updated in place.
+
+### Session report
+When you quit, Sentinela prints a summary to the terminal: uptime, total alerts, unique IPs seen, the most active source, the most targeted port, and a breakdown by severity.
 
 ---
 
-## 🛠️ Arquitetura do Código
+## Incident severity levels
 
-A estrutura modular do projeto em `src/` divide-se nas seguintes responsabilidades:
-
-| Módulo | Ficheiro | Responsabilidade |
-| :--- | :--- | :--- |
-| **Ponto de Entrada** | [`src/main.rs`](src/main.rs) | Ciclo principal de eventos, escuta de sinais (SIGINT/Ctrl+C), gestão de argumentos e coordenação assíncrona. |
-| **Modelos de Dados** | [`src/models.rs`](src/models.rs) | Estruturas de `Incident`, `SeverityFilter`, `PortWarning` e definições multilíngue (`Language`). |
-| **Captura de Rede** | [`src/network.rs`](src/network.rs) | Sniffer de pacotes brutos via `pnet`, deteção de interfaces ativas e controlador de ligações. |
-| **Análise Heurística** | [`src/scanner.rs`](src/scanner.rs) | Deteção de padrões de varrimento (Nmap, múltiplos IPs, taxas de pacotes por segundo). |
-| **Armadilhas (Traps)** | [`src/traps.rs`](src/traps.rs) | Gestão de sockets de escuta nas portas armadilha e geração de alertas intrusivos. |
-| **Interface Visual** | [`src/ui.rs`](src/ui.rs) | Renderização dos widgets Ratatui, blocos, tabelas, modais de ajuda e avisos. |
+| Level | Colour | Triggered by |
+|---|---|---|
+| Critical | Red | Connections to SSH (22, 2222), Telnet (23, 2323), Redis (6379), MongoDB (27017) traps |
+| Sweep | Red | ≥ 5 distinct ports from the same IP within 5 seconds |
+| Medium | Yellow | Connections to FTP, SMTP, MySQL, PostgreSQL, RDP traps |
+| Scan | Magenta | Raw SYN / NULL / FIN / XMAS packet detected |
+| Alert | Cyan | Connections to DNS, HTTP, HTTPS or custom traps |
 
 ---
 
-## 🚀 Como Compilar e Executar
+## Dashboard
 
-### Pré-requisitos
-* **Rust & Cargo** (versão 1.70 ou superior recomendada):
-  ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
-* **Dependências de Rede em Linux (Fedora / Debian / Ubuntu / Arch):**
-  * Em Fedora: `sudo dnf install libpcap-devel libcap`
-  * Em Ubuntu/Debian: `sudo apt install libpcap-dev libcap2-bin`
+The terminal UI adapts to the available width:
 
-### Permissões de Rede (`CAP_NET_RAW`)
-Para capturar pacotes de rede crus sem necessitar de correr o binário completo como `root`, o Sentinela utiliza a capacidade Linux `CAP_NET_RAW`. O script incluído `run.sh` configura isto automaticamente:
+| Terminal width | Columns shown |
+|---|---|
+| Under 70 columns | Time, Risk, Source, Target |
+| 70 – 94 columns | + Location |
+| 95 columns and above | + Hits, ISP |
+
+The header shows current network interface IPs, raw scanner status, and system info. An asterisk next to an IP (`192.168.1.1*`) means that address has triggered more than one alert this session.
+
+The UI language switches between Portuguese and English at runtime. It is auto-detected from your `$LANG` / `$LC_ALL` environment variable at startup and can be toggled at any time with `l`.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `q` / `Ctrl+C` | Exit |
+| `i` | Open / close help modal |
+| `w` | Open / close port security audit |
+| `l` | Toggle language (PT / EN) |
+| `k` | Toggle emergency network killswitch |
+| `f` | Cycle severity filter: All → Critical → Medium and above |
+| `r` | Restore network (undo killswitch) |
+| `↑` / `↓` / `j` / `k` | Scroll incident list |
+| `PgUp` / `PgDn` | Scroll 5 lines at a time |
+| `Home` / `End` | Jump to top / bottom |
+| `Esc` | Close any open modal |
+
+Scrolling works the same way inside the help and port audit modals.
+
+---
+
+## Build from source
+
+**Dependencies:**
+- Rust and Cargo 1.70 or later
+- On Linux: `libpcap` and `libcap`
 
 ```bash
-# Dar permissão de execução ao script
+# Fedora / RHEL
+sudo dnf install libpcap-devel libcap
+
+# Debian / Ubuntu
+sudo apt install libpcap-dev libcap2-bin
+```
+
+**Using the included script (recommended):**
+```bash
 chmod +x run.sh
-
-# Executar em modo Release com portas padrão
 ./run.sh
+
+# With custom trap ports:
+./run.sh 22 3306 9200
 ```
 
-### Argumentos Opcionais (Portas Personalizadas)
-Podes especificar portas armadilhadas adicionais como argumentos de linha de comando:
+The script builds a release binary, applies `CAP_NET_RAW` automatically, and runs it.
 
-```bash
-# Monitorizar armadilhas personalizadas nas portas 2222, 8080 e 9999
-./run.sh 2222 8080 9999
-```
-
-Ou compilar diretamente com o Cargo:
+**Manual:**
 ```bash
 cargo build --release
-sudo setcap cap_net_raw+eip target/release/sentinela
+sudo setcap cap_net_raw,cap_net_admin+eip target/release/sentinela
 ./target/release/sentinela
 ```
 
 ---
 
-## ⌨️ Atalhos de Teclado no Dashboard
+## Code structure
 
-| Tecla | Ação |
-| :---: | :--- |
-| `q` / `Ctrl+C` | **Sair** do Sentinela e restaurar o terminal com segurança |
-| `i` | Abrir / Fechar janela de **Ajuda** (*Help Modal*) |
-| `w` | Consultar **Auditor de Avisos** de Portas Abertas (*Port Warnings*) |
-| `l` | Alternar idioma entre **Português** e **Inglês** |
-| `k` | Ativar / Desativar **Emergency Network Killswitch** |
-| `f` | Alternar filtro de severidade (**Todos** $\rightarrow$ **Baixa** $\rightarrow$ **Média** $\rightarrow$ **Alta** $\rightarrow$ **Crítica**) |
-| `r` | Reiniciar contadores de tráfego e limpar filtros ativos |
-| `↑` / `↓` | Percorrer a lista de incidentes detetados |
-| `Home` / `End` | Saltar para o início ou fim da lista de incidentes |
-| `Esc` | Fechar qualquer janela modal aberta |
+| File | Role |
+|---|---|
+| `src/main.rs` | Entry point, event loop, CLI argument parsing, async coordination |
+| `src/models.rs` | Core data types: `Incident`, `PortWarning`, `SeverityFilter`, `Language` |
+| `src/network.rs` | Raw packet capture, GeoIP, killswitch, local port scanner, desktop notifications |
+| `src/scanner.rs` | Heuristic scan detection (SYN stealth, NULL, FIN, XMAS, port sweeps) |
+| `src/traps.rs` | Honeypot TCP listeners, connection handling, alert generation |
+| `src/ui.rs` | Ratatui rendering, responsive layout, modals |
+
+The scanner module (`src/scanner.rs`) is Linux-only and compiled conditionally. On other platforms, the rest of the application continues to work through the trap-based detection in `src/traps.rs`.
 
 ---
 
-## 📄 Licença
+## Notes on permissions
 
-Este projeto está licenciado sob a Licença **MIT** — consulta o ficheiro [LICENSE](LICENSE) para mais detalhes.
+Raw packet capture on Linux requires `CAP_NET_RAW`. The install script and `run.sh` set this capability on the binary automatically using `setcap`. If you run the binary without it, Sentinela will still start and the honeypot traps will still work — only the raw scanner will be inactive, which is shown in the header.
+
+The killswitch also needs `CAP_NET_ADMIN` (or root) to insert `iptables` rules. Without it, it falls back to bringing interfaces down via `ip link`.
 
 ---
 
-<p align="center">
-  Desenvolvido por <strong>teizinh</strong> • Cibersegurança & Engenharia de Sistemas Informáticos
-</p>
+## Platform support
+
+| Feature | Linux | Windows | macOS |
+|---|---|---|---|
+| Honeypot traps | ✓ | ✓ | ✓ |
+| Raw scan detection | ✓ | — | — |
+| Killswitch | ✓ (iptables + rfkill) | ✓ (PowerShell) | ✓ (networksetup) |
+| Desktop notifications | ✓ (notify-send) | ✓ (PowerShell) | ✓ (osascript) |
+| GeoIP lookup | ✓ | ✓ | ✓ |
+| Audit logs | ✓ | ✓ | ✓ |
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
+*Developed by [teizinh](https://github.com/teizinh)*

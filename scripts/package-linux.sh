@@ -13,9 +13,9 @@ fi
 
 if [ -z "$VERSION" ]; then
     if [ -f "Cargo.toml" ]; then
-        VERSION="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
+        VERSION="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)"
     else
-        VERSION="0.3.1"
+        VERSION="0.3.2"
     fi
 fi
 
@@ -68,7 +68,7 @@ Priority: optional
 Architecture: ${DEB_ARCH}
 Maintainer: Salvador Pontes <123838416+teizinh@users.noreply.github.com>
 Depends: libc6 (>= 2.31)
-Recommends: libcap2-bin
+Recommends: libcap2-bin, iptables
 Description: Sentinela - Honeypot & Network Intrusion Detection System
  Sistema leve de deteção de intrusões (NIDS) e armadilhas honeypot em Rust.
 
@@ -77,8 +77,18 @@ EOF
 cat << 'EOF' > "${DEB_ROOT}/DEBIAN/postinst"
 #!/bin/sh
 set -e
+
+SETCAP_BIN=""
 if command -v setcap >/dev/null 2>&1; then
-    setcap cap_net_raw,cap_net_admin+eip /usr/bin/sentinela 2>/dev/null || true
+    SETCAP_BIN="setcap"
+elif [ -x /usr/sbin/setcap ]; then
+    SETCAP_BIN="/usr/sbin/setcap"
+elif [ -x /sbin/setcap ]; then
+    SETCAP_BIN="/sbin/setcap"
+fi
+
+if [ -n "$SETCAP_BIN" ]; then
+    "$SETCAP_BIN" cap_net_raw,cap_net_admin+eip /usr/bin/sentinela 2>/dev/null || true
 fi
 EOF
 chmod 755 "${DEB_ROOT}/DEBIAN/postinst"

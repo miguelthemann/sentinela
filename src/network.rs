@@ -3,11 +3,11 @@ use get_if_addrs::get_if_addrs;
 #[cfg(target_os = "linux")]
 use std::fs;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     net::IpAddr,
     process::{Command, Stdio},
-    sync::OnceLock,
+    sync::{OnceLock, RwLock as StdRwLock},
     time::Duration,
 };
 use tokio::sync::RwLock;
@@ -54,10 +54,54 @@ pub fn detect_language() -> Language {
     }
 }
 
+struct HostIpsCache {
+    ips: HashSet<IpAddr>,
+    expires_at: std::time::Instant,
+}
+
+static HOST_IPS_CACHE: StdRwLock<Option<HostIpsCache>> = StdRwLock::new(None);
+
 pub fn is_host_ip(ip: IpAddr) -> bool {
     if ip.is_loopback() {
         return true;
     }
+
+    let now = std::time::Instant::now();
+
+    // Fast path: leitura da cache sem contenção caso ainda esteja válida (TTL de 10 segundos)
+    if let Ok(guard) = HOST_IPS_CACHE.read() {
+        if let Some(cache) = &*guard {
+            if now < cache.expires_at {
+                return cache.ips.contains(&ip);
+            }
+        }
+    }
+
+    // Refresh path: atualiza as interfaces locais evitando tempestades de chamadas netlink
+    if let Ok(mut guard) = HOST_IPS_CACHE.write() {
+        // Double-check após adquirir o lock de escrita
+        if let Some(cache) = &*guard {
+            if now < cache.expires_at {
+                return cache.ips.contains(&ip);
+            }
+        }
+
+        let mut fresh_ips = HashSet::new();
+        if let Ok(interfaces) = get_if_addrs() {
+            for iface in interfaces {
+                fresh_ips.insert(iface.ip());
+            }
+        }
+
+        let is_host = fresh_ips.contains(&ip);
+        *guard = Some(HostIpsCache {
+            ips: fresh_ips,
+            expires_at: now + Duration::from_secs(10),
+        });
+        return is_host;
+    }
+
+    // Fallback de segurança se o lock estiver corrompido
     if let Ok(interfaces) = get_if_addrs() {
         for iface in interfaces {
             if iface.ip() == ip {
@@ -65,6 +109,7 @@ pub fn is_host_ip(ip: IpAddr) -> bool {
             }
         }
     }
+
     false
 }
 
@@ -708,12 +753,22 @@ pub fn send_desktop_alert(incident: &Incident) {
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let last = LAST_NOTIFICATION_MILLIS.load(Ordering::Relaxed);
-    // Limite: no máximo 1 notificação desktop a cada 3 segundos para evitar bloquear ou floodar
-    if now_millis.saturating_sub(last) < 3000 {
-        return;
+    // Rate limit atómico: no máximo 1 notificação desktop a cada 3 segundos (sem race conditions)
+    let mut current = LAST_NOTIFICATION_MILLIS.load(Ordering::Relaxed);
+    loop {
+        if now_millis.saturating_sub(current) < 3000 {
+            return;
+        }
+        match LAST_NOTIFICATION_MILLIS.compare_exchange_weak(
+            current,
+            now_millis,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
     }
-    LAST_NOTIFICATION_MILLIS.store(now_millis, Ordering::Relaxed);
 
     let _urgency = match incident.severity.as_str() {
         "CRÍTICO" => "critical".to_string(),
@@ -969,5 +1024,13 @@ mod tests {
             );
             assert_eq!(entry.geo.0, "Portugal");
         }
+    }
+
+    #[test]
+    fn test_is_host_ip_loopback() {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+        assert!(is_host_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(is_host_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(!is_host_ip(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))));
     }
 }

@@ -100,54 +100,55 @@ fn line_matches_ip(line: &str, ip: &str) -> bool {
     false
 }
 
-/// Escreve um incidente no buffer de log em lote.
-/// Esta função adiciona a entrada a um buffer partilhado em vez de escrever
-/// imediatamente ao disco. Um escritor em background escreve o buffer a cada 100ms,
-/// reduzindo significativamente as chamadas de sistema ao disco e economizando energia.
-///
-/// Esta função é não-blocking - retorna imediatamente após adicionar ao buffer.
-#[allow(dead_code)]
-pub fn add_log_entry(entry: String) {
-    static LOG_BUFFER: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    let mut buffer = LOG_BUFFER.lock().unwrap();
-    buffer.push(entry);
-}
+/// Regista um lote de incidentes no ficheiro de log em disco numa única operação de escrita,
+/// minimizando syscalls e atrasos de I/O sob volumes elevados de tráfego.
+pub async fn log_incidents_to_disk(incidents: &[Incident]) {
+    if incidents.is_empty() {
+        return;
+    }
 
-/// Escreve um incidente ao ficheiro de log.
-/// Esta versão em lote acumula entradas no buffer e o escritor em background
-/// escreve a cada 100ms, reduzindo I/O de disco em comparação com a escrita
-/// individual por incidente. Note que esta função usa um mutex estático interno
-/// para o buffer - em produção, considere mover o LOG_BUFFER para o módulo principal.
-pub async fn log_incident_to_disk(incident: &Incident) {
     let filename = get_log_filename();
-    let location = if incident.city.is_empty() || incident.city == "?" {
-        incident.country.clone()
-    } else {
-        format!("{}, {}", incident.city, incident.country)
-    };
+    let mut batch_text = String::with_capacity(incidents.len() * 120);
 
-    let log_entry = format!(
-        "[{}] [{:<7}] IP: {:<15} | Porta: {:<5} ({:<11}) | Local: {:<22} | ISP: {} | Hits: {}\n",
-        incident.timestamp,
-        incident.severity,
-        incident.ip,
-        incident.port,
-        incident.service,
-        location,
-        incident.isp,
-        incident.hit_count,
-    );
+    for incident in incidents {
+        let location = if incident.city.is_empty() || incident.city == "?" {
+            incident.country.clone()
+        } else {
+            format!("{}, {}", incident.city, incident.country)
+        };
 
-    // Escreve diretamente ao disco (mantém compatibilidade com a funcionalidade existente)
-    // TODO: Em futuro, substituir por add_log_entry() para batch writing
+        let target_desc = if incident.port == 0 {
+            format!("{:<17}", incident.service)
+        } else {
+            format!("Porta: {:<5} ({:<11})", incident.port, incident.service)
+        };
+
+        batch_text.push_str(&format!(
+            "[{}] [{:<7}] IP: {:<15} | {} | Local: {:<22} | ISP: {} | Hits: {}\n",
+            incident.timestamp,
+            incident.severity,
+            incident.ip,
+            target_desc,
+            location,
+            incident.isp,
+            incident.hit_count,
+        ));
+    }
+
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&filename)
         .await
     {
-        let _ = file.write_all(log_entry.as_bytes()).await;
+        let _ = file.write_all(batch_text.as_bytes()).await;
     }
+}
+
+/// Regista um incidente individual no ficheiro de log em disco
+#[allow(dead_code)]
+pub async fn log_incident_to_disk(incident: &Incident) {
+    log_incidents_to_disk(std::slice::from_ref(incident)).await;
 }
 
 /// Inicia armadilhas TCP nas portas fornecidas.
@@ -282,5 +283,29 @@ mod tests {
         assert!(line_matches_ip(line, "192.168.1.10"));
         assert!(!line_matches_ip(line, "192.168.1.1"));
         assert!(!line_matches_ip(line, "192.168.1.100"));
+    }
+
+    #[test]
+    fn test_classify_port() {
+        assert_eq!(classify_port(21), ("FTP", "MÉDIO"));
+        assert_eq!(classify_port(22), ("SSH", "CRÍTICO"));
+        assert_eq!(classify_port(2222), ("SSH", "CRÍTICO"));
+        assert_eq!(classify_port(23), ("Telnet", "CRÍTICO"));
+        assert_eq!(classify_port(80), ("HTTP", "ALERTA"));
+        assert_eq!(classify_port(8080), ("HTTP", "ALERTA"));
+        assert_eq!(classify_port(443), ("HTTPS", "ALERTA"));
+        assert_eq!(classify_port(3306), ("MySQL", "MÉDIO"));
+        assert_eq!(classify_port(5432), ("PostgreSQL", "MÉDIO"));
+        assert_eq!(classify_port(6379), ("Redis", "CRÍTICO"));
+        assert_eq!(classify_port(27017), ("MongoDB", "CRÍTICO"));
+        assert_eq!(classify_port(3389), ("RDP", "MÉDIO"));
+        assert_eq!(classify_port(9999), ("Custom", "ALERTA"));
+    }
+
+    #[test]
+    fn test_get_log_filename() {
+        let name = get_log_filename();
+        assert!(name.starts_with("sentinela_"));
+        assert!(name.ends_with(".log"));
     }
 }

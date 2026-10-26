@@ -258,7 +258,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             format!("{}, {}", item.city, item.country)
         };
 
-        let target_str = format!(":{} ({})", item.port, item.service);
+        let target_str = if item.port == 0 {
+            item.service.clone()
+        } else {
+            format!(":{} ({})", item.port, item.service)
+        };
 
         // Indica consistentemente com * os IPs com múltiplos hits (tanto em modo compacto como expandido)
         let ip_display = if item.hit_count > 1 {
@@ -493,21 +497,41 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
 
 // Centra os modais cobrindo a área de forma homogénea sem deixar sobras feias de lado
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let px = percent_x.min(100);
+    let py = percent_y.min(100);
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage((100 - py) / 2),
+            Constraint::Percentage(py),
+            Constraint::Percentage((100 - py) / 2),
         ])
         .split(r);
 
     Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage((100 - px) / 2),
+            Constraint::Percentage(px),
+            Constraint::Percentage((100 - px) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_centered_rect_bounds() {
+        let area = Rect::new(0, 0, 100, 50);
+        let r1 = centered_rect(50, 50, area);
+        assert!(r1.width <= 100);
+        assert!(r1.height <= 50);
+
+        // Previne underflow de inteiros caso sejam passadas percentagens > 100
+        let r2 = centered_rect(150, 200, area);
+        assert!(r2.width <= 100);
+        assert!(r2.height <= 50);
+    }
 }

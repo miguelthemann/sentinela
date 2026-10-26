@@ -188,6 +188,7 @@ mod linux {
                                                     let (country, city, isp) =
                                                         inspect_ip(src_ip).await;
                                                     let rdns = resolve_rdns(src_ip).await;
+                                                    let threat_score = crate::models::calculate_threat_score("SCAN", 1, false);
                                                     let _ = tx2.send(Incident {
                                                         timestamp: Local::now()
                                                             .format("%Y-%m-%d %H:%M:%S")
@@ -204,6 +205,8 @@ mod linux {
                                                         city,
                                                         isp,
                                                         rdns,
+                                                        payload: None,
+                                                        threat_score,
                                                         hit_count: 1,
                                                     });
                                                 });
@@ -243,6 +246,7 @@ mod linux {
                                                         let (country, city, isp) =
                                                             inspect_ip(src_ip).await;
                                                         let rdns = resolve_rdns(src_ip).await;
+                                                        let threat_score = crate::models::calculate_threat_score("SWEEP", 1, false);
                                                         let ports_str = if swept.len() > 6 {
                                                             let sample = swept[..6]
                                                                 .iter()
@@ -276,6 +280,8 @@ mod linux {
                                                             city,
                                                             isp,
                                                             rdns,
+                                                            payload: None,
+                                                            threat_score,
                                                             hit_count: 1,
                                                         });
                                                     });

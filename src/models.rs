@@ -26,8 +26,35 @@ pub struct Incident {
     pub isp: String,
     /// Hostname DNS reverso obtido assincronamente (se disponível)
     pub rdns: Option<String>,
+    /// Primeiros bytes de payload/banner capturados (se houver)
+    pub payload: Option<String>,
+    /// Pontuação de perigo de 0 a 100 baseada em severidade, repetições e payload
+    pub threat_score: u8,
     /// Número total de vezes que este IP foi visto na sessão atual
     pub hit_count: usize,
+}
+
+/// Calcula uma pontuação de perigo (0 a 100) para priorização e triagem no SOC
+pub fn calculate_threat_score(severity: &str, hit_count: usize, has_payload: bool) -> u8 {
+    let base = match severity {
+        "CRÍTICO" => 60,
+        "SWEEP" => 75,
+        "MÉDIO" => 40,
+        "SCAN" => 35,
+        "ALERTA" => 20,
+        _ => 15,
+    };
+    let hit_bonus = if hit_count >= 10 {
+        20
+    } else if hit_count >= 5 {
+        15
+    } else if hit_count >= 2 {
+        10
+    } else {
+        0
+    };
+    let payload_bonus = if has_payload { 15 } else { 0 };
+    (base + hit_bonus + payload_bonus).min(100)
 }
 
 /// Aviso sobre uma porta localmente vulnerável
@@ -137,5 +164,13 @@ mod tests {
             SeverityFilter::MediumAndAbove.label(Language::En),
             "Medium+"
         );
+    }
+
+    #[test]
+    fn test_calculate_threat_score() {
+        assert_eq!(calculate_threat_score("CRÍTICO", 1, false), 60);
+        assert_eq!(calculate_threat_score("CRÍTICO", 5, true), 90);
+        assert_eq!(calculate_threat_score("SWEEP", 10, true), 100);
+        assert_eq!(calculate_threat_score("ALERTA", 1, false), 20);
     }
 }

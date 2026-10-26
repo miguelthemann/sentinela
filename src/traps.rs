@@ -57,6 +57,7 @@ struct TrapConnection {
     attacker_ip: std::net::IpAddr,
     port: u16,
     timestamp: String,
+    payload: Option<String>,
 }
 
 /// Atualiza o valor de "Hits" da entrada correspondente no log em disco.
@@ -170,6 +171,7 @@ pub async fn start_traps(
             let (country, city, isp) = inspect_ip(conn.attacker_ip).await;
             let rdns = resolve_rdns(conn.attacker_ip).await;
             let (service, severity) = classify_port(conn.port);
+            let threat_score = crate::models::calculate_threat_score(severity, 1, conn.payload.is_some());
 
             let incident = Incident {
                 timestamp: conn.timestamp,
@@ -181,6 +183,8 @@ pub async fn start_traps(
                 city,
                 isp,
                 rdns,
+                payload: conn.payload,
+                threat_score,
                 hit_count: 1, // Inicializado a 1; atualizado pelo ciclo principal com base na contagem real
             };
 
@@ -203,7 +207,7 @@ pub async fn start_traps(
                 tokio::spawn(async move {
                     loop {
                         match listener.accept().await {
-                            Ok((_socket, peer_addr)) => {
+                            Ok((mut socket, peer_addr)) => {
                                 // Converte endereços IPv4-mapped em IPv6 para IPv4 nativo para consistência
                                 let attacker_ip = match peer_addr.ip() {
                                     std::net::IpAddr::V6(v6) => v6
@@ -219,13 +223,47 @@ pub async fn start_traps(
                                 }
 
                                 let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                                let q_tx_clone = q_tx.clone();
 
-                                // Enfileira a conexão imediatamente sem esperar por GeoIP ou disco,
-                                // garantindo que o ciclo accept() nunca bloqueia e aceita novas conexões sem atraso
-                                let _ = q_tx.send(TrapConnection {
-                                    attacker_ip,
-                                    port,
-                                    timestamp: now,
+                                // Lê os primeiros bytes com timeout rápido (300ms) para capturar banners / payloads HTTP / SSH
+                                tokio::spawn(async move {
+                                    use tokio::io::AsyncReadExt;
+                                    let mut buf = [0u8; 512];
+                                    let payload = match tokio::time::timeout(
+                                        tokio::time::Duration::from_millis(300),
+                                        socket.read(&mut buf),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(n)) if n > 0 => {
+                                            let sanitized: String = buf[..n]
+                                                .iter()
+                                                .map(|&b| {
+                                                    if b.is_ascii_graphic() || b == b' ' {
+                                                        b as char
+                                                    } else if b == b'\r' || b == b'\n' {
+                                                        ' '
+                                                    } else {
+                                                        '.'
+                                                    }
+                                                })
+                                                .collect();
+                                            let clean = sanitized.trim();
+                                            if !clean.is_empty() {
+                                                Some(clean.chars().take(120).collect())
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        _ => None,
+                                    };
+
+                                    let _ = q_tx_clone.send(TrapConnection {
+                                        attacker_ip,
+                                        port,
+                                        timestamp: now,
+                                        payload,
+                                    });
                                 });
                             }
                             Err(_) => {

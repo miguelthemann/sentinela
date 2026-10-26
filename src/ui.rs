@@ -2,7 +2,7 @@ use crate::models::{Incident, Language, PortWarning, SeverityFilter, SysInfo};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, Wrap},
     Frame,
 };
 use std::collections::HashMap;
@@ -30,6 +30,8 @@ pub struct UiContext<'a> {
     pub show_incident_modal: bool,
     pub banned_ips: &'a std::collections::HashSet<String>,
     pub toast_message: Option<&'a str>,
+    pub audio_alerts: bool,
+    pub activity_history: &'a [u64],
 }
 
 pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
@@ -147,6 +149,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         show_incident_modal,
         banned_ips,
         toast_message,
+        audio_alerts,
+        activity_history,
     } = *ctx;
 
     // Em modo mobile ou ecrãs curtos (como Termux no telemóvel), remove margens externas
@@ -174,20 +178,27 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         ])
         .split(f.area());
 
-    // 1. Cabeçalho Responsivo (Divide horizontalmente apenas em ecrãs largos desktop)
-    let top_constraints = if screen_width < 100 {
-        [Constraint::Percentage(60), Constraint::Percentage(40)]
-    } else {
-        [Constraint::Percentage(70), Constraint::Percentage(30)]
-    };
-
+    // 1. Cabeçalho Responsivo (Divide em até 3 secções em desktop: Status, Sistema e Pulso de Tráfego)
     let top_chunks = if !is_mobile {
-        Some(
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints(top_constraints)
-                .split(chunks[0]),
-        )
+        if screen_width >= 105 {
+            Some(
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(55),
+                        Constraint::Length(25),
+                        Constraint::Min(18),
+                    ])
+                    .split(chunks[0]),
+            )
+        } else {
+            Some(
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+                    .split(chunks[0]),
+            )
+        }
     } else {
         None
     };
@@ -254,10 +265,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     };
 
     let filter_label = severity_filter.label(lang);
+    let audio_badge = if audio_alerts { " 🔔" } else { "" };
     let title_status = if is_mobile {
-        format!(" Sentinela v{} ", env!("CARGO_PKG_VERSION"))
+        format!(" Sentinela v{}{} ", env!("CARGO_PKG_VERSION"), audio_badge)
     } else {
-        format!(" Sentinela SOC v{} ", env!("CARGO_PKG_VERSION"))
+        format!(" Sentinela SOC v{}{} ", env!("CARGO_PKG_VERSION"), audio_badge)
     };
 
     let local_ips_compact = if is_mobile {
@@ -343,6 +355,18 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             .style(Style::default().fg(Color::Cyan))
             .block(Block::default().borders(Borders::ALL).title(sys_title));
         f.render_widget(sys_p, top[1]);
+
+        if top.len() > 2 {
+            let spark_title = match lang {
+                Language::Pt => " Atividade (24s) ",
+                Language::En => " Activity (24s) ",
+            };
+            let spark_widget = Sparkline::default()
+                .block(Block::default().borders(Borders::ALL).title(spark_title))
+                .data(activity_history)
+                .style(Style::default().fg(Color::Yellow));
+            f.render_widget(spark_widget, top[2]);
+        }
     } else {
         f.render_widget(header_p, chunks[0]);
     }
@@ -510,8 +534,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         }
     } else {
         match lang {
-            Language::Pt => " [↵] Raio-X Detalhado | [B] Banir IP | [E] Exportar Relatório | [K] Killswitch | [W] Avisos | [I] Manual | [F] Filtro | [L] Idioma | [Q] Sair ".to_string(),
-            Language::En => " [↵] Deep Inspection | [B] Ban IP | [E] Export Threat Intel | [K] Killswitch | [W] Warnings | [I] Manual | [F] Filter | [L] Language | [Q] Quit ".to_string(),
+            Language::Pt => " [↵] Raio-X | [B] Banir IP | [E] Exportar | [A] Alertas | [K] Killswitch | [W] Avisos | [I] Manual | [F] Filtro | [Q] Sair ".to_string(),
+            Language::En => " [↵] Deep Inspection | [B] Ban IP | [E] Export | [A] Alerts | [K] Killswitch | [W] Warnings | [I] Manual | [F] Filter | [Q] Quit ".to_string(),
         }
     };
 
@@ -626,6 +650,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        [E]   Exportar: Exporta Threat Intel completa da sessão (JSON + CSV).\n\
                        [F]   Filtro: Alternar filtro de severidade (Todos / Críticos / Médio+).\n\
                        [W]   Avisos: Lista portas perigosas abertas e como fechá-las.\n\
+                       [A]   Alertas: Ativar/Desativar som de alarme e notificações desktop.\n\
                        [K]   Killswitch: Isola o PC da rede imediatamente.\n\
                        [R]   Repor: Restaura as interfaces de rede normais.\n\
                        [L]   Idioma: Alterna entre Português e Inglês.\n\
@@ -661,6 +686,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        [E]   Export: Dump Threat Intel session report to JSON and CSV.\n\
                        [F]   Filter: Cycle severity filter (All / Critical / Medium+).\n\
                        [W]   Warnings: Checks risky listening ports and fix commands.\n\
+                       [A]   Alerts: Toggle audio bell sound and desktop notifications.\n\
                        [K]   Killswitch: Disconnects the system from all networks.\n\
                        [R]   Restore: Re-enables networking adapters.\n\
                        [L]   Language: Toggles between Portuguese and English.\n\
@@ -731,7 +757,29 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 format!("Porta {} ({})", inc.port, inc.service)
             };
 
-            let quick_firewall = format!("iptables -I INPUT 1 -s {} -j DROP", inc.ip);
+            let quick_firewall = if cfg!(target_os = "windows") {
+                format!("netsh advfirewall firewall add rule name=Sentinela_Block_{} dir=in action=block remoteip={}", inc.ip, inc.ip)
+            } else {
+                format!("iptables -I INPUT 1 -s {} -j DROP", inc.ip)
+            };
+
+            let payload_display = match &inc.payload {
+                Some(p) => format!("\"{}\"", p),
+                None => match lang {
+                    Language::Pt => "Nenhum (sondagem raw SYN/scan sem envio de dados)".to_string(),
+                    Language::En => "None (raw SYN probe or closed without payload)".to_string(),
+                },
+            };
+
+            let threat_level_label = if inc.threat_score >= 80 {
+                match lang { Language::Pt => "CRÍTICO / IMINENTE", Language::En => "CRITICAL / IMMINENT" }
+            } else if inc.threat_score >= 60 {
+                match lang { Language::Pt => "ALTO RISCO", Language::En => "HIGH RISK" }
+            } else if inc.threat_score >= 35 {
+                match lang { Language::Pt => "MÉDIO / SCANNER", Language::En => "MEDIUM / SCANNER" }
+            } else {
+                match lang { Language::Pt => "BAIXO / SONDAGEM", Language::En => "LOW / PROBE" }
+            };
 
             let body = match lang {
                 Language::Pt => format!(
@@ -741,8 +789,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • DNS Reverso (rDNS):  {}\n\
                      • Estado no Firewall:  {}\n\
                      • Nível de Severidade: {}\n\
+                     • Threat Score (0-100):{}/100 [{}]\n\
                      • Vezes Visto (Hits):  {} conexão(ões)\n\
                      • Carimbo de Data/Hora:{}\n\n\
+                     PAYLOAD & ASSINATURA CAPTURADA:\n\
+                     • Dados / Banner:      {}\n\n\
                      GEOLOCALIZAÇÃO & REDE:\n\
                      • País:                {}\n\
                      • Cidade:              {}\n\
@@ -760,8 +811,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                     rdns_display,
                     ban_status,
                     inc.severity,
+                    inc.threat_score,
+                    threat_level_label,
                     inc.hit_count,
                     inc.timestamp,
+                    payload_display,
                     inc.country,
                     if inc.city.is_empty() { "N/D" } else { &inc.city },
                     inc.isp,
@@ -776,8 +830,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • Reverse DNS (rDNS):  {}\n\
                      • Firewall Status:     {}\n\
                      • Threat Severity:     {}\n\
+                     • Threat Score (0-100):{}/100 [{}]\n\
                      • Probe Count (Hits):  {} connection(s)\n\
                      • Event Timestamp:     {}\n\n\
+                     CAPTURED PAYLOAD & APPLICATION BANNER:\n\
+                     • Raw Data / Banner:   {}\n\n\
                      GEOLOCATION & NETWORK METADATA:\n\
                      • Country:             {}\n\
                      • City:                {}\n\
@@ -795,8 +852,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                     rdns_display,
                     ban_status,
                     inc.severity,
+                    inc.threat_score,
+                    threat_level_label,
                     inc.hit_count,
                     inc.timestamp,
+                    payload_display,
                     inc.country,
                     if inc.city.is_empty() { "N/A" } else { &inc.city },
                     inc.isp,

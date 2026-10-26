@@ -475,14 +475,59 @@ pub fn unban_ip(ip: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn ban_ip(_ip: &str) -> Result<(), String> {
-    Err("Bloqueio cirúrgico de IP suportado nativamente em Linux".to_string())
+#[cfg(target_os = "windows")]
+pub fn ban_ip(ip: &str) -> Result<(), String> {
+    if ip.parse::<IpAddr>().is_err() {
+        return Err("Endereço IP inválido para bloqueio".to_string());
+    }
+    let rule_name = format!("Sentinela_Block_{}", ip);
+    let output = std::process::Command::new("netsh")
+        .args([
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            &format!("name={}", rule_name),
+            "dir=in",
+            "action=block",
+            &format!("remoteip={}", ip),
+            "description=Bloqueio cirurgico gerado pelo Sentinela SOC",
+        ])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(_) => Err("Falha ao banir IP no Windows Firewall (requer privilégios de Administrador)".to_string()),
+        Err(e) => Err(format!("Erro ao executar netsh: {}", e)),
+    }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+pub fn unban_ip(ip: &str) -> Result<(), String> {
+    let rule_name = format!("Sentinela_Block_{}", ip);
+    let output = std::process::Command::new("netsh")
+        .args([
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            &format!("name={}", rule_name),
+        ])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(_) => Err("Falha ao remover regra do Windows Firewall (requer privilégios de Administrador)".to_string()),
+        Err(e) => Err(format!("Erro ao executar netsh: {}", e)),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn ban_ip(_ip: &str) -> Result<(), String> {
+    Err("Bloqueio cirúrgico de IP suportado em Linux e Windows".to_string())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn unban_ip(_ip: &str) -> Result<(), String> {
-    Err("Bloqueio cirúrgico de IP suportado nativamente em Linux".to_string())
+    Err("Bloqueio cirúrgico de IP suportado em Linux e Windows".to_string())
 }
 
 /// Exporta todos os incidentes registados na sessão para relatórios estruturados JSON e CSV.
@@ -526,21 +571,24 @@ pub fn export_threat_report(
     let json_content = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&json_name, json_content).map_err(|e| format!("Erro ao gravar JSON: {}", e))?;
 
-    let mut csv = String::from("Timestamp,IP,Port,Service,Severity,Country,City,ISP,rDNS,Hits,Banned\n");
+    let mut csv = String::from("Timestamp,IP,Port,Service,Severity,Score,Country,City,ISP,rDNS,Payload,Hits,Banned\n");
     for inc in incidents {
         let is_banned = if banned_ips.contains(&inc.ip) { "SIM" } else { "NAO" };
         let rdns = inc.rdns.as_deref().unwrap_or("");
+        let payload = inc.payload.as_deref().unwrap_or("");
         csv.push_str(&format!(
-            "\"{}\",\"{}\",{},\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},\"{}\"\n",
+            "\"{}\",\"{}\",{},\"{}\",\"{}\",{},\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},\"{}\"\n",
             inc.timestamp,
             inc.ip,
             inc.port,
             inc.service,
             inc.severity,
+            inc.threat_score,
             inc.country,
             inc.city,
             inc.isp.replace('"', "\"\""),
             rdns.replace('"', "\"\""),
+            payload.replace('"', "\"\""),
             inc.hit_count,
             is_banned
         ));
@@ -1271,6 +1319,8 @@ mod tests {
             isp: "Internal Router".to_string(),
             hit_count: 3,
             rdns: Some("gateway.lan".to_string()),
+            payload: Some("SSH-2.0-OpenSSH_9.0".to_string()),
+            threat_score: 85,
         }];
 
         let mut banned = HashSet::new();
@@ -1295,8 +1345,9 @@ mod tests {
         assert!(json_content.contains("gateway.lan"));
 
         let csv_content = std::fs::read_to_string(&csv_file).unwrap();
-        assert!(csv_content.contains("Timestamp,IP,Port,Service,Severity,Country,City,ISP,rDNS,Hits,Banned"));
+        assert!(csv_content.contains("Timestamp,IP,Port,Service,Severity,Score,Country,City,ISP,rDNS,Payload,Hits,Banned"));
         assert!(csv_content.contains("gateway.lan"));
+        assert!(csv_content.contains("SSH-2.0-OpenSSH_9.0"));
         assert!(csv_content.contains("\"SIM\""));
 
         // Limpeza dos ficheiros de teste

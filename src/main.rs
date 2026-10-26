@@ -98,6 +98,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut show_incident_modal = false;
     let mut banned_ips: HashSet<String> = HashSet::new();
     let mut toast_message: Option<(String, Instant)> = None;
+    let mut audio_alerts = false;
+    let mut activity_history: Vec<u64> = vec![0; 24];
+    let mut last_activity_tick = Instant::now();
+    let mut recent_interval_events: u64 = 0;
     let mut cached_warnings: Vec<PortWarning> = Vec::new();
     let mut scroll_offset: usize = 0;
     let mut modal_scroll: u16 = 0;
@@ -139,6 +143,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let count = ip_hit_counts.entry(incident.ip.clone()).or_insert(0);
             *count += 1;
             incident.hit_count = *count;
+            incident.threat_score = crate::models::calculate_threat_score(
+                &incident.severity,
+                incident.hit_count,
+                incident.payload.is_some(),
+            );
+
+            // Alerta sonoro de terminal (bell) para ameaças críticas ou varrimentos
+            if audio_alerts && (incident.severity == "CRÍTICO" || incident.severity == "SWEEP") {
+                use std::io::Write;
+                print!("\x07");
+                let _ = std::io::stdout().flush();
+            }
+
+            recent_interval_events += 1;
 
             // Dispara notificação nativa no ambiente gráfico (não bloqueante e com rate limit)
             network::send_desktop_alert(&incident);
@@ -158,6 +176,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         if !log_batch.is_empty() {
             traps::log_incidents_to_disk(&log_batch).await;
+        }
+
+        // Atualiza a janela deslizante de pulso de tráfego por segundo para o Sparkline
+        if last_activity_tick.elapsed() >= Duration::from_secs(1) {
+            activity_history.remove(0);
+            activity_history.push(recent_interval_events);
+            recent_interval_events = 0;
+            last_activity_tick = Instant::now();
         }
 
         // Calcula a lista filtrada para passar à UI e para gerir scroll
@@ -205,6 +231,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 show_incident_modal,
                 banned_ips: &banned_ips,
                 toast_message: active_toast,
+                audio_alerts,
+                activity_history: &activity_history,
             };
             ui::render_ui(f, &ui_ctx);
         })?;
@@ -224,6 +252,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 if show_help || show_warnings || show_incident_modal {
                     match key.code {
+                        KeyCode::Char('a' | 'A') => {
+                            audio_alerts = !audio_alerts;
+                            let msg = if audio_alerts {
+                                match lang {
+                                    Language::Pt => "[🔔] Alertas sonoros & desktop: ATIVADOS",
+                                    Language::En => "[🔔] Audio & desktop alerts: ENABLED",
+                                }
+                            } else {
+                                match lang {
+                                    Language::Pt => "[🔕] Alertas sonoros: DESATIVADOS",
+                                    Language::En => "[🔕] Audio alerts: DISABLED",
+                                }
+                            };
+                            toast_message = Some((msg.to_string(), Instant::now()));
+                        }
                         KeyCode::Char('i' | 'I') => {
                             show_help = false;
                             show_incident_modal = false;
@@ -360,6 +403,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     toast_message = Some((format!("[!] Falha na exportação: {}", e), Instant::now()));
                                 }
                             }
+                        }
+                        KeyCode::Char('a' | 'A') => {
+                            audio_alerts = !audio_alerts;
+                            let msg = if audio_alerts {
+                                match lang {
+                                    Language::Pt => "[🔔] Alertas sonoros & desktop: ATIVADOS",
+                                    Language::En => "[🔔] Audio & desktop alerts: ENABLED",
+                                }
+                            } else {
+                                match lang {
+                                    Language::Pt => "[🔕] Alertas sonoros: DESATIVADOS",
+                                    Language::En => "[🔕] Audio alerts: DISABLED",
+                                }
+                            };
+                            toast_message = Some((msg.to_string(), Instant::now()));
                         }
                         KeyCode::Char('i' | 'I') => {
                             show_help = true;
@@ -612,6 +670,7 @@ fn print_help() {
     println!("  ↵ (Enter)       Raio-X forense detalhado do incidente selecionado");
     println!("  b               Banir / Desbanir IP do atacante (DROP firewall)");
     println!("  e               Exportar Threat Intelligence da sessão (JSON + CSV)");
+    println!("  a               Ativar / Desativar alerta sonoro (Bell) e notificações");
     println!("  i               Abrir / Fechar janela de ajuda (Help Modal)");
     println!("  w               Consultar auditor de portas vulneráveis abertas");
     println!("  l               Alternar idioma entre Português e Inglês");

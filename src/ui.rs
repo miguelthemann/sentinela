@@ -22,6 +22,7 @@ pub struct UiContext<'a> {
     pub scroll_offset: usize,
     pub severity_filter: SeverityFilter,
     pub severity_stats: &'a HashMap<String, usize>,
+    pub port_stats: &'a HashMap<u16, usize>,
     pub trap_ports: &'a [u16],
     pub scanner_active: bool,
 }
@@ -43,6 +44,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         scroll_offset,
         severity_filter,
         severity_stats,
+        port_stats,
         trap_ports,
         scanner_active,
     } = *ctx;
@@ -69,14 +71,9 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         .constraints(top_constraints)
         .split(chunks[0]);
 
-    let _total_attacks = incidents.len();
-    let mut port_counts = HashMap::new();
-    for inc in incidents {
-        *port_counts.entry(inc.port).or_insert(0) += 1;
-    }
-    let top_port = port_counts
-        .into_iter()
-        .max_by_key(|&(_, count)| count)
+    let top_port = port_stats
+        .iter()
+        .max_by_key(|&(_, count)| *count)
         .map(|(p, c)| format!(":{} ({}x)", p, c))
         .unwrap_or_else(|| match lang {
             Language::Pt => "Nenhuma".to_string(),
@@ -270,26 +267,24 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             item.ip.clone()
         };
 
-        let mut cells = vec![
-            Cell::from(item.timestamp.clone()),
-            Cell::from(item.severity.clone())
-                .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
-            Cell::from(ip_display.clone()),
-            Cell::from(target_str),
-            Cell::from(location_str.clone()),
-        ];
-
-        if screen_width >= 95 {
-            // Em modo alargado: inserir coluna Hits e separar Localização / ISP
+        let cells = if screen_width < 95 {
+            vec![
+                Cell::from(item.timestamp.as_str()),
+                Cell::from(item.severity.as_str())
+                    .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
+                Cell::from(ip_display),
+                Cell::from(target_str),
+                Cell::from(location_str),
+            ]
+        } else {
             let hits_str = if item.hit_count > 1 {
                 format!("×{}", item.hit_count)
             } else {
                 String::from("1")
             };
-            // Reconstruir cells na ordem certa para o modo alargado
-            cells = vec![
-                Cell::from(item.timestamp.clone()),
-                Cell::from(item.severity.clone())
+            vec![
+                Cell::from(item.timestamp.as_str()),
+                Cell::from(item.severity.as_str())
                     .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
                 Cell::from(ip_display),
                 Cell::from(hits_str).style(Style::default().fg(if item.hit_count > 1 {
@@ -297,11 +292,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 } else {
                     Color::White
                 })),
-                Cell::from(format!(":{} ({})", item.port, item.service)),
+                Cell::from(target_str),
                 Cell::from(location_str),
-                Cell::from(item.isp.clone()),
-            ];
-        }
+                Cell::from(item.isp.as_str()),
+            ]
+        };
 
         Row::new(cells).style(Style::default().fg(Color::White))
     });

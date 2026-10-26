@@ -81,12 +81,13 @@ mod linux {
         now: Instant,
         sweep_window: Duration,
     ) {
-        trap_dedup.retain(|_, t| now.duration_since(*t) < Duration::from_secs(30));
+        trap_dedup.retain(|_, t| now.saturating_duration_since(*t) < Duration::from_secs(30));
         sweep_tracker.retain(|_, history| {
-            history.retain(|(_, t)| now.duration_since(*t) <= sweep_window);
+            history.retain(|(_, t)| now.saturating_duration_since(*t) <= sweep_window);
             !history.is_empty()
         });
-        sweep_alert_dedup.retain(|_, t| now.duration_since(*t) < Duration::from_secs(30));
+        sweep_alert_dedup
+            .retain(|_, t| now.saturating_duration_since(*t) < Duration::from_secs(30));
     }
 
     /// Tenta iniciar o scanner de pacotes raw em todas as interfaces não-loopback.
@@ -121,7 +122,7 @@ mod linux {
                     loop {
                         let now = Instant::now();
                         // Limpeza periódica dos mapas a cada 10 segundos
-                        if now.duration_since(last_cleanup) >= Duration::from_secs(10) {
+                        if now.saturating_duration_since(last_cleanup) >= Duration::from_secs(10) {
                             last_cleanup = now;
                             cleanup_scanner_maps(
                                 &mut trap_dedup,
@@ -154,7 +155,9 @@ mod linux {
                                         let key = (src_ip, dst_port);
                                         let fresh = trap_dedup
                                             .get(&key)
-                                            .map(|t| now.duration_since(*t) >= DEDUP_WINDOW)
+                                            .map(|t| {
+                                                now.saturating_duration_since(*t) >= DEDUP_WINDOW
+                                            })
                                             .unwrap_or(true);
 
                                         if fresh {
@@ -195,7 +198,8 @@ mod linux {
                                     {
                                         let history = sweep_tracker.entry(src_ip).or_default();
                                         history.retain(|(_, ts)| {
-                                            now.duration_since(*ts) <= sweep_config.window
+                                            now.saturating_duration_since(*ts)
+                                                <= sweep_config.window
                                         });
                                         history.push((dst_port, now));
 
@@ -206,7 +210,8 @@ mod linux {
                                             let should_alert = sweep_alert_dedup
                                                 .get(&src_ip)
                                                 .map(|t| {
-                                                    now.duration_since(*t) >= sweep_config.window
+                                                    now.saturating_duration_since(*t)
+                                                        >= sweep_config.window
                                                 })
                                                 .unwrap_or(true);
 
@@ -330,8 +335,8 @@ mod linux {
             let mut sweep_alert_dedup = HashMap::new();
 
             let now = Instant::now();
-            let old_time = now - Duration::from_secs(35);
-            let recent_time = now - Duration::from_secs(5);
+            let old_time = now.checked_sub(Duration::from_secs(35)).unwrap();
+            let recent_time = now.checked_sub(Duration::from_secs(5)).unwrap();
 
             let ip_old = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
             let ip_recent = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -374,17 +379,17 @@ mod linux {
             let now = Instant::now();
             let mut history: Vec<(u16, Instant)> = Vec::new();
 
-            history.push((80, now - Duration::from_secs(3)));
-            history.push((443, now - Duration::from_secs(2)));
-            history.push((8080, now - Duration::from_secs(1)));
+            history.push((80, now.checked_sub(Duration::from_secs(3)).unwrap()));
+            history.push((443, now.checked_sub(Duration::from_secs(2)).unwrap()));
+            history.push((8080, now.checked_sub(Duration::from_secs(1)).unwrap()));
 
-            history.retain(|(_, ts)| now.duration_since(*ts) <= config.window);
+            history.retain(|(_, ts)| now.saturating_duration_since(*ts) <= config.window);
             let distinct: HashSet<u16> = history.iter().map(|(p, _)| *p).collect();
             assert_eq!(distinct.len(), 3);
             assert!(distinct.len() < config.threshold);
 
             history.push((8443, now));
-            history.retain(|(_, ts)| now.duration_since(*ts) <= config.window);
+            history.retain(|(_, ts)| now.saturating_duration_since(*ts) <= config.window);
             let distinct: HashSet<u16> = history.iter().map(|(p, _)| *p).collect();
             assert_eq!(distinct.len(), 4);
             assert!(

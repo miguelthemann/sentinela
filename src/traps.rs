@@ -199,30 +199,37 @@ pub async fn start_traps(
                 let q_tx = queue_tx.clone();
                 tokio::spawn(async move {
                     loop {
-                        if let Ok((_socket, peer_addr)) = listener.accept().await {
-                            // Converte endereços IPv4-mapped em IPv6 para IPv4 nativo para consistência
-                            let attacker_ip = match peer_addr.ip() {
-                                std::net::IpAddr::V6(v6) => v6
-                                    .to_ipv4_mapped()
-                                    .map(std::net::IpAddr::V4)
-                                    .unwrap_or(std::net::IpAddr::V6(v6)),
-                                std::net::IpAddr::V4(v4) => std::net::IpAddr::V4(v4),
-                            };
+                        match listener.accept().await {
+                            Ok((_socket, peer_addr)) => {
+                                // Converte endereços IPv4-mapped em IPv6 para IPv4 nativo para consistência
+                                let attacker_ip = match peer_addr.ip() {
+                                    std::net::IpAddr::V6(v6) => v6
+                                        .to_ipv4_mapped()
+                                        .map(std::net::IpAddr::V4)
+                                        .unwrap_or(std::net::IpAddr::V6(v6)),
+                                    std::net::IpAddr::V4(v4) => std::net::IpAddr::V4(v4),
+                                };
 
-                            // Descarta conexões locais (loopback e IPs locais da própria máquina)
-                            if crate::network::is_host_ip(attacker_ip) {
-                                continue;
+                                // Descarta conexões locais (loopback e IPs locais da própria máquina)
+                                if crate::network::is_host_ip(attacker_ip) {
+                                    continue;
+                                }
+
+                                let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+                                // Enfileira a conexão imediatamente sem esperar por GeoIP ou disco,
+                                // garantindo que o ciclo accept() nunca bloqueia e aceita novas conexões sem atraso
+                                let _ = q_tx.send(TrapConnection {
+                                    attacker_ip,
+                                    port,
+                                    timestamp: now,
+                                });
                             }
-
-                            let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-
-                            // Enfileira a conexão imediatamente sem esperar por GeoIP ou disco,
-                            // garantindo que o ciclo accept() nunca bloqueia e aceita novas conexões sem atraso
-                            let _ = q_tx.send(TrapConnection {
-                                attacker_ip,
-                                port,
-                                timestamp: now,
-                            });
+                            Err(_) => {
+                                // Em caso de erro transitório de socket (ex.: descritores de ficheiro esgotados),
+                                // pausa brevemente para evitar busy-loop a 100% de CPU
+                                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                            }
                         }
                     }
                 });

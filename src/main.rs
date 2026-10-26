@@ -163,6 +163,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 scroll_offset,
                 severity_filter,
                 severity_stats: &severity_stats,
+                port_stats: &port_stats,
                 trap_ports: &trap_ports,
                 scanner_active,
             };
@@ -184,8 +185,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 if show_help || show_warnings {
                     match key.code {
-                        KeyCode::Char('i') | KeyCode::Char('I') => show_help = false,
-                        KeyCode::Char('w') | KeyCode::Char('W') => show_warnings = false,
+                        KeyCode::Char('i' | 'I') => show_help = false,
+                        KeyCode::Char('w' | 'W') => show_warnings = false,
                         KeyCode::Esc => {
                             show_help = false;
                             show_warnings = false;
@@ -194,19 +195,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 } else {
                     match key.code {
-                        KeyCode::Char('q') | KeyCode::Char('Q') => break,
-                        KeyCode::Char('i') | KeyCode::Char('I') => show_help = true,
-                        KeyCode::Char('w') | KeyCode::Char('W') => {
+                        KeyCode::Char('q' | 'Q') => break,
+                        KeyCode::Char('i' | 'I') => show_help = true,
+                        KeyCode::Char('w' | 'W') => {
                             cached_warnings = network::scan_open_ports_warnings(&trap_ports, lang);
                             show_warnings = true;
                         }
-                        KeyCode::Char('l') | KeyCode::Char('L') => {
+                        KeyCode::Char('l' | 'L') => {
                             lang = match lang {
                                 Language::Pt => Language::En,
                                 Language::En => Language::Pt,
                             };
                         }
-                        KeyCode::Char('k') | KeyCode::Char('K') => {
+                        KeyCode::Char('k' | 'K') => {
                             let target = !killswitch_active;
                             if !target {
                                 // Desativa o killswitch e restaura a rede
@@ -230,8 +231,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         killswitch_active = true;
                                         killswitch_failed = true;
                                         let msg = match lang {
-                                            Language::Pt => "Falha no Killswitch: Requer privilégios de root (sudo)!",
-                                            Language::En => "Killswitch failed: Root/sudo privileges required!",
+                                             Language::Pt => "Falha no Killswitch: Requer privilégios de root (sudo)!",
+                                             Language::En => "Killswitch failed: Root/sudo privileges required!",
                                         };
                                         network::send_desktop_notification_raw(
                                             "[!] Sentinela: Killswitch",
@@ -246,20 +247,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         }
-                        KeyCode::Char('r') | KeyCode::Char('R') => {
-                            match network::toggle_network(false) {
-                                Ok(()) => {
-                                    killswitch_active = false;
-                                    killswitch_failed = false;
-                                }
-                                Err(_) => {
-                                    killswitch_active = false;
-                                    killswitch_failed = true;
-                                }
+                        KeyCode::Char('r' | 'R') => match network::toggle_network(false) {
+                            Ok(()) => {
+                                killswitch_active = false;
+                                killswitch_failed = false;
                             }
-                        }
+                            Err(_) => {
+                                killswitch_active = false;
+                                killswitch_failed = true;
+                            }
+                        },
                         // Filtro de severidade
-                        KeyCode::Char('f') | KeyCode::Char('F') => {
+                        KeyCode::Char('f' | 'F') => {
                             severity_filter = severity_filter.next();
                             scroll_offset = 0;
                         }
@@ -369,24 +368,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "\x1b[1;36m======================================================================\x1b[0m"
     );
-    println!(
-        " [*] {:<18} : \x1b[1m{:02}m {:02}s\x1b[0m",
-        time_lbl, minutes, seconds
-    );
-    println!(
-        " [+] {:<18} : \x1b[1;33m{}\x1b[0m",
-        det_lbl, total_detections_count
-    );
-    println!(" [*] {:<18} : \x1b[1m{}\x1b[0m", ip_lbl, unique_ips.len());
-    println!(" [!] {:<18} : \x1b[1;31m{}\x1b[0m", top_ip_lbl, top_ip_info);
-    println!(" [>] {:<18} : \x1b[1;31m{}\x1b[0m", port_lbl, top_port_info);
-    println!(" [!] {:<18} : {}", sev_lbl, sev_breakdown);
+    println!(" [*] {time_lbl:<18} : \x1b[1m{minutes:02}m {seconds:02}s\x1b[0m");
+    println!(" [+] {det_lbl:<18} : \x1b[1;33m{total_detections_count}\x1b[0m");
+    println!(" [*] {ip_lbl:<18} : \x1b[1m{}\x1b[0m", unique_ips.len());
+    println!(" [!] {top_ip_lbl:<18} : \x1b[1;31m{top_ip_info}\x1b[0m");
+    println!(" [>] {port_lbl:<18} : \x1b[1;31m{top_port_info}\x1b[0m");
+    println!(" [!] {sev_lbl:<18} : {sev_breakdown}");
     println!("----------------------------------------------------------------------");
     println!(
         " [#] SO / Kernel       : {} ({}) [{}]",
         sys_info.distro, sys_info.kernel, sys_info.arch
     );
-    println!(" [#] {:<18} : \x1b[1;32m{}\x1b[0m", log_lbl, full_log_path);
+    println!(" [#] {log_lbl:<18} : \x1b[1;32m{full_log_path}\x1b[0m");
     println!(
         "\x1b[1;36m======================================================================\x1b[0m\n"
     );

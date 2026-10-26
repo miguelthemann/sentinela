@@ -35,7 +35,7 @@ fn get_http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(Duration::from_secs(3))
-            .user_agent("sentinela/0.3.2")
+            .user_agent(concat!("sentinela/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("Falha ao construir cliente HTTP")
     })

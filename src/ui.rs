@@ -247,9 +247,9 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
 
     let filter_label = severity_filter.label(lang);
     let title_status = if is_mobile {
-        " Sentinela "
+        format!(" Sentinela v{} ", env!("CARGO_PKG_VERSION"))
     } else {
-        " Sentinela SOC "
+        format!(" Sentinela SOC v{} ", env!("CARGO_PKG_VERSION"))
     };
 
     let local_ips_compact = if is_mobile {
@@ -578,7 +578,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             Language::Pt => (
                 " [#] MANUAL DE OPERAÇÃO - SENTINELA ",
                 format!(
-                    "SENTINELA HIDS & HONEYPOT\n\
+                    "SENTINELA HIDS & HONEYPOT v{}\n\
                      -------------------------------------------------------------\n\
                      • OBJETIVO:\n\
                        Monitorizar e intercetar varrimentos de portas (nmap, bots)\n\
@@ -603,13 +603,14 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        * após o IP = mesmo atacante visto múltiplas vezes (coluna Hits).\n\
                        CRIT: Crítico  |  MED: Médio  |  ALRT: Alerta  |  SCAN: Varrimento\n\n\
                      [j/k ou ↑↓ scroll | I/ESC voltar]",
+                    env!("CARGO_PKG_VERSION"),
                     trap_ports_str
                 ),
             ),
             Language::En => (
                 " [#] OPERATION MANUAL - SENTINELA ",
                 format!(
-                    "SENTINELA HIDS & HONEYPOT\n\
+                    "SENTINELA HIDS & HONEYPOT v{}\n\
                      -------------------------------------------------------------\n\
                      • PURPOSE:\n\
                        Monitors and flags unauthorized port scans and probes,\n\
@@ -634,6 +635,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        * after IP = same attacker seen multiple times (Hits column).\n\
                        CRIT: Critical  |  MED: Medium  |  ALRT: Alert  |  SCAN: Scan/Sweep\n\n\
                      [j/k or ↑↓ scroll | I/ESC return]",
+                    env!("CARGO_PKG_VERSION"),
                     trap_ports_str
                 ),
             ),
@@ -753,5 +755,14 @@ mod tests {
     fn test_format_modal_title() {
         assert_eq!(format_modal_title(" [#] MANUAL ", 0), " [#] MANUAL ");
         assert_eq!(format_modal_title(" [#] MANUAL ", 5), " [#] MANUAL [+5] ");
+    }
+
+    #[test]
+    fn test_sentinela_soc_version_title() {
+        let mobile = format!(" Sentinela v{} ", env!("CARGO_PKG_VERSION"));
+        let desktop = format!(" Sentinela SOC v{} ", env!("CARGO_PKG_VERSION"));
+        assert!(mobile.contains(env!("CARGO_PKG_VERSION")));
+        assert!(desktop.contains("SOC"));
+        assert!(desktop.contains(env!("CARGO_PKG_VERSION")));
     }
 }

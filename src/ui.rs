@@ -20,6 +20,7 @@ pub struct UiContext<'a> {
     pub warnings: &'a [PortWarning],
     pub failed_traps: &'a [u16],
     pub scroll_offset: usize,
+    pub modal_scroll: u16,
     pub severity_filter: SeverityFilter,
     pub severity_stats: &'a HashMap<String, usize>,
     pub port_stats: &'a HashMap<u16, usize>,
@@ -27,8 +28,98 @@ pub struct UiContext<'a> {
     pub scanner_active: bool,
 }
 
+pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
+    if scroll_offset > 0 {
+        format!("{} [+{}] ", base_title.trim_end(), scroll_offset)
+    } else {
+        format!("{} ", base_title.trim_end())
+    }
+}
+
+pub fn extract_time_str(timestamp: &str) -> &str {
+    timestamp.split_whitespace().nth(1).unwrap_or(timestamp)
+}
+
+pub fn abbreviate_severity(severity: &str) -> &'static str {
+    match severity {
+        "CRÍTICO" => "CRIT",
+        "MÉDIO" => "MED",
+        "ALERTA" => "ALRT",
+        "SWEEP" => "SWP",
+        "SCAN" => "SCAN",
+        _ => "INFO",
+    }
+}
+
+pub fn get_table_columns(width: u16, lang: Language) -> (Vec<&'static str>, Vec<Constraint>) {
+    if width < 70 {
+        // Modo Ultra-Compacto para Termux / ecrãs móveis em modo retrato (~40-65 colunas)
+        let h = match lang {
+            Language::Pt => vec!["Hora", "Risco", "Origem", "Alvo"],
+            Language::En => vec!["Time", "Risk", "Source", "Target"],
+        };
+        let c = vec![
+            Constraint::Length(8),
+            Constraint::Length(6),
+            Constraint::Length(16),
+            Constraint::Min(8),
+        ];
+        (h, c)
+    } else if width < 95 {
+        // Modo compacto para tablets / terminais estreitos
+        let h = match lang {
+            Language::Pt => vec!["Hora", "Risco", "IP Origem", "Alvo", "Localização"],
+            Language::En => vec!["Time", "Risk", "Source IP", "Target", "Location"],
+        };
+        let c = vec![
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(16),
+            Constraint::Length(15),
+            Constraint::Min(12),
+        ];
+        (h, c)
+    } else {
+        // Modo alargado desktop completo
+        let h = match lang {
+            Language::Pt => vec![
+                "Timestamp",
+                "Risco",
+                "IP Origem",
+                "Hits",
+                "Alvo / Serviço",
+                "Localização",
+                "ISP",
+            ],
+            Language::En => vec![
+                "Timestamp",
+                "Risk",
+                "Source IP",
+                "Hits",
+                "Target / Service",
+                "Location",
+                "ISP",
+            ],
+        };
+        let c = vec![
+            Constraint::Length(19),
+            Constraint::Length(8),
+            Constraint::Length(17),
+            Constraint::Length(5),
+            Constraint::Length(18),
+            Constraint::Length(20),
+            Constraint::Min(16),
+        ];
+        (h, c)
+    }
+}
+
 pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     let screen_width = f.area().width;
+    let screen_height = f.area().height;
+    let is_mobile = screen_width < 75;
+    let is_ultra_compact = screen_width < 70;
+
     let UiContext {
         incidents,
         killswitch_active,
@@ -42,6 +133,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         warnings,
         failed_traps,
         scroll_offset,
+        modal_scroll,
         severity_filter,
         severity_stats,
         port_stats,
@@ -49,27 +141,48 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         scanner_active,
     } = *ctx;
 
+    // Em modo mobile ou ecrãs curtos (como Termux no telemóvel), remove margens externas
+    // para maximizar o espaço útil do terminal
+    let margin = if is_mobile || screen_height < 24 {
+        0
+    } else {
+        1
+    };
+    let header_height = if screen_height < 18 {
+        3
+    } else if is_mobile {
+        4
+    } else {
+        5
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
+        .margin(margin)
         .constraints([
-            Constraint::Length(5),
-            Constraint::Min(8),
+            Constraint::Length(header_height),
+            Constraint::Min(4),
             Constraint::Length(3),
         ])
         .split(f.area());
 
-    // 1. Cabeçalho Responsivo
+    // 1. Cabeçalho Responsivo (Divide horizontalmente apenas em ecrãs largos desktop)
     let top_constraints = if screen_width < 100 {
         [Constraint::Percentage(60), Constraint::Percentage(40)]
     } else {
         [Constraint::Percentage(70), Constraint::Percentage(30)]
     };
 
-    let top_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(top_constraints)
-        .split(chunks[0]);
+    let top_chunks = if !is_mobile {
+        Some(
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(top_constraints)
+                .split(chunks[0]),
+        )
+    } else {
+        None
+    };
 
     let top_port = port_stats
         .iter()
@@ -133,20 +246,63 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     };
 
     let filter_label = severity_filter.label(lang);
+    let title_status = if is_mobile {
+        " Sentinela "
+    } else {
+        " Sentinela SOC "
+    };
 
-    let title_status = " Sentinela SOC ";
+    let local_ips_compact = if is_mobile {
+        local_ips.split(" | ").next().unwrap_or(local_ips)
+    } else {
+        local_ips
+    };
 
-    let header_info = match lang {
-        Language::Pt => format!(
-            " IPs: {} | Log: {}\n Estado: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filtro: {} | +Visada: {}",
-            local_ips, log_name, status_label, traps_status, scanner_label,
-            crit, med, alrt, scans, filter_label, top_port
-        ),
-        Language::En => format!(
-            " IPs: {} | Log: {}\n Status: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filter: {} | Top: {}",
-            local_ips, log_name, status_label, traps_status, scanner_label,
-            crit, med, alrt, scans, filter_label, top_port
-        ),
+    let header_info = if screen_height < 18 {
+        format!(
+            " {} | IPs: {} | C:{} M:{} S:{}",
+            status_label, local_ips_compact, crit, med, scans
+        )
+    } else if is_mobile {
+        match lang {
+            Language::Pt => format!(
+                " Estado: {} | {} | {}\n IPs: {} | C:{} M:{} A:{} S:{} | +Vis: {}",
+                status_label,
+                traps_status,
+                scanner_label,
+                local_ips_compact,
+                crit,
+                med,
+                alrt,
+                scans,
+                top_port
+            ),
+            Language::En => format!(
+                " Status: {} | {} | {}\n IPs: {} | C:{} M:{} A:{} S:{} | Top: {}",
+                status_label,
+                traps_status,
+                scanner_label,
+                local_ips_compact,
+                crit,
+                med,
+                alrt,
+                scans,
+                top_port
+            ),
+        }
+    } else {
+        match lang {
+            Language::Pt => format!(
+                " IPs: {} | Log: {}\n Estado: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filtro: {} | +Visada: {}",
+                local_ips, log_name, status_label, traps_status, scanner_label,
+                crit, med, alrt, scans, filter_label, top_port
+            ),
+            Language::En => format!(
+                " IPs: {} | Log: {}\n Status: {} | {} | {} | CRIT:{} MED:{} ALRT:{} SCAN:{} | Filter: {} | Top: {}",
+                local_ips, log_name, status_label, traps_status, scanner_label,
+                crit, med, alrt, scans, filter_label, top_port
+            ),
+        }
     };
 
     let header_p = Paragraph::new(header_info)
@@ -156,76 +312,35 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                 .add_modifier(Modifier::BOLD),
         )
         .block(Block::default().borders(Borders::ALL).title(title_status));
-    f.render_widget(header_p, top_chunks[0]);
 
-    // Caixa de Sistema (Kernel encurtado para caber sem truncar)
-    let short_kernel = if sys_info.kernel.len() > 18 {
-        format!("{}...", &sys_info.kernel[..15])
-    } else {
-        sys_info.kernel.clone()
-    };
+    if let Some(ref top) = top_chunks {
+        f.render_widget(header_p, top[0]);
 
-    let sys_box_text = format!(
-        " SO: {}\n Kernel: {}\n Arch: {}",
-        sys_info.distro, short_kernel, sys_info.arch
-    );
-    let sys_title = match lang {
-        Language::Pt => " Sistema ",
-        Language::En => " System ",
-    };
-    let sys_p = Paragraph::new(sys_box_text)
-        .style(Style::default().fg(Color::Cyan))
-        .block(Block::default().borders(Borders::ALL).title(sys_title));
-    f.render_widget(sys_p, top_chunks[1]);
-
-    // 2. Tabela com colunas dinâmicas segundo a largura do ecrã
-    let (headers_text, col_constraints): (Vec<&str>, Vec<Constraint>) = if screen_width < 95 {
-        // Modo compacto para terminais estreitos
-        let h = match lang {
-            Language::Pt => vec!["Hora", "Risco", "IP Origem", "Alvo", "Localização"],
-            Language::En => vec!["Time", "Risk", "Source IP", "Target", "Location"],
+        // Caixa de Sistema (Kernel encurtado para caber sem truncar)
+        let short_kernel = if sys_info.kernel.len() > 18 {
+            format!("{}...", &sys_info.kernel[..15])
+        } else {
+            sys_info.kernel.clone()
         };
-        let c = vec![
-            Constraint::Length(9),
-            Constraint::Length(8),
-            Constraint::Length(16),
-            Constraint::Length(15),
-            Constraint::Min(12),
-        ];
-        (h, c)
-    } else {
-        // Modo alargado — inclui ISP e hits
-        let h = match lang {
-            Language::Pt => vec![
-                "Timestamp",
-                "Risco",
-                "IP Origem",
-                "Hits",
-                "Alvo / Serviço",
-                "Localização",
-                "ISP",
-            ],
-            Language::En => vec![
-                "Timestamp",
-                "Risk",
-                "Source IP",
-                "Hits",
-                "Target / Service",
-                "Location",
-                "ISP",
-            ],
+
+        let sys_box_text = format!(
+            " SO: {}\n Kernel: {}\n Arch: {}",
+            sys_info.distro, short_kernel, sys_info.arch
+        );
+        let sys_title = match lang {
+            Language::Pt => " Sistema ",
+            Language::En => " System ",
         };
-        let c = vec![
-            Constraint::Length(20),
-            Constraint::Length(8),
-            Constraint::Length(17),
-            Constraint::Length(5),
-            Constraint::Length(18),
-            Constraint::Length(20),
-            Constraint::Min(16),
-        ];
-        (h, c)
-    };
+        let sys_p = Paragraph::new(sys_box_text)
+            .style(Style::default().fg(Color::Cyan))
+            .block(Block::default().borders(Borders::ALL).title(sys_title));
+        f.render_widget(sys_p, top[1]);
+    } else {
+        f.render_widget(header_p, chunks[0]);
+    }
+
+    // 2. Tabela com colunas dinâmicas (Mobile Termux / Tablet / Desktop)
+    let (headers_text, col_constraints) = get_table_columns(screen_width, lang);
 
     let header_cells = headers_text.into_iter().map(|h| {
         Cell::from(h).style(
@@ -251,6 +366,18 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             _ => Color::Cyan,
         };
 
+        let time_str = if screen_width < 95 {
+            extract_time_str(item.timestamp.as_str())
+        } else {
+            item.timestamp.as_str()
+        };
+
+        let severity_display = if is_ultra_compact {
+            abbreviate_severity(item.severity.as_str())
+        } else {
+            item.severity.as_str()
+        };
+
         // Localização: "Cidade, País" se disponível, senão só país
         let location_str = if item.city.is_empty() {
             item.country.clone()
@@ -264,6 +391,12 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             format!(":{} ({})", item.port, item.service)
         };
 
+        let mobile_target = if item.port == 0 {
+            item.service.clone()
+        } else {
+            format!(":{}", item.port)
+        };
+
         // Indica consistentemente com * os IPs com múltiplos hits (tanto em modo compacto como expandido)
         let ip_display = if item.hit_count > 1 {
             format!("{}*", item.ip)
@@ -271,9 +404,17 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             item.ip.clone()
         };
 
-        let cells = if screen_width < 95 {
+        let cells = if is_ultra_compact {
             vec![
-                Cell::from(item.timestamp.as_str()),
+                Cell::from(time_str),
+                Cell::from(severity_display)
+                    .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
+                Cell::from(ip_display),
+                Cell::from(mobile_target),
+            ]
+        } else if screen_width < 95 {
+            vec![
+                Cell::from(time_str),
                 Cell::from(item.severity.as_str())
                     .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
                 Cell::from(ip_display),
@@ -312,15 +453,16 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         String::new()
     };
 
-    let table_title = match lang {
-        Language::Pt => format!(
-            " Deteções em Direto [{}]{} ",
-            filter_label_display, scroll_info
-        ),
-        Language::En => format!(
-            " Live Detections [{}]{} ",
-            filter_label_display, scroll_info
-        ),
+    let table_title = if is_ultra_compact {
+        match lang {
+            Language::Pt => format!(" Deteções [{filter_label_display}] "),
+            Language::En => format!(" Detections [{filter_label_display}] "),
+        }
+    } else {
+        match lang {
+            Language::Pt => format!(" Deteções em Direto [{filter_label_display}]{scroll_info} "),
+            Language::En => format!(" Live Detections [{filter_label_display}]{scroll_info} "),
+        }
     };
 
     let table = Table::new(rows, col_constraints)
@@ -329,10 +471,22 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
 
     f.render_widget(table, chunks[1]);
 
-    // 3. Rodapé com Atalhos
-    let footer_text = match lang {
-        Language::Pt => " [K] Killswitch (Liga/Desliga) | [R] Repor | [W] Avisos | [I] Manual | [F] Filtro | [↑↓] Scroll | [L] Idioma | [Q] Sair ",
-        Language::En => " [K] Killswitch (Toggle) | [R] Restore | [W] Warnings | [I] Manual | [F] Filter | [↑↓] Scroll | [L] Language | [Q] Quit ",
+    // 3. Rodapé Responsivo com Atalhos
+    let footer_text = if screen_width < 55 {
+        match lang {
+            Language::Pt => " [Q]Sair [K]Kill [F]Filtro [W]Avisos [↑↓]Nav",
+            Language::En => " [Q]Quit [K]Kill [F]Filter [W]Warn [↑↓]Nav",
+        }
+    } else if screen_width < 75 {
+        match lang {
+            Language::Pt => " [Q]Sair [K]Kill [F]Filtro [W]Avisos [I]Ajuda [↑↓]Nav",
+            Language::En => " [Q]Quit [K]Kill [F]Filter [W]Warn [I]Help [↑↓]Nav",
+        }
+    } else {
+        match lang {
+            Language::Pt => " [K] Killswitch (Liga/Desliga) | [R] Repor | [W] Avisos | [I] Manual | [F] Filtro | [↑↓/Pg] Scroll | [L] Idioma | [Q] Sair ",
+            Language::En => " [K] Killswitch (Toggle) | [R] Restore | [W] Warnings | [I] Manual | [F] Filter | [↑↓/Pg] Scroll | [L] Language | [Q] Quit ",
+        }
     };
 
     let footer = Paragraph::new(footer_text)
@@ -340,9 +494,11 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(footer, chunks[2]);
 
+    let (modal_w, modal_h) = if is_mobile { (96, 92) } else { (88, 85) };
+
     // 4. Modal de Avisos de Portas Vulneráveis (Tecla W)
     if show_warnings {
-        let area = centered_rect(88, 85, f.area());
+        let area = centered_rect(modal_w, modal_h, f.area());
         f.render_widget(Clear, area);
 
         let (w_title, w_body) = if warnings.is_empty() {
@@ -379,8 +535,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             }
 
             match lang {
-                Language::Pt => report.push_str("[Prime 'W' ou 'ESC' para voltar ao painel]"),
-                Language::En => report.push_str("[Press 'W' or 'ESC' to return]"),
+                Language::Pt => report.push_str("[j/k ou ↑↓ scroll | W/ESC voltar]"),
+                Language::En => report.push_str("[j/k or ↑↓ scroll | W/ESC return]"),
             }
 
             let t = match lang {
@@ -390,14 +546,17 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             (t, report)
         };
 
+        let final_title = format_modal_title(w_title, modal_scroll);
+
         let modal_p = Paragraph::new(w_body)
             .style(Style::default().fg(Color::White))
             .wrap(Wrap { trim: true })
+            .scroll((modal_scroll, 0))
             .alignment(Alignment::Left)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(w_title)
+                    .title(final_title)
                     .style(Style::default().bg(Color::Black).fg(Color::Yellow)),
             );
 
@@ -406,7 +565,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
 
     // 5. Modal de Manual / Info (Tecla I)
     if show_help {
-        let area = centered_rect(88, 85, f.area());
+        let area = centered_rect(modal_w, modal_h, f.area());
         f.render_widget(Clear, area);
 
         let trap_ports_str = trap_ports
@@ -429,7 +588,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        geolocalizada (país + cidade) e gravada em disco.\n\
                        Portas ativas: {}\n\n\
                      • ATALHOS:\n\
-                       [↑↓]  Scroll: Navegar nos incidentes (mantém histórico de 100).\n\
+                       [↑↓ / j/k] Scroll: Navegar nos incidentes ou neste manual.\n\
                        [F]   Filtro: Alternar filtro de severidade (Todos / Críticos / Médio+).\n\
                        [W]   Avisos: Lista portas perigosas abertas e como fechá-las.\n\
                        [K]   Killswitch: Isola o PC da rede imediatamente.\n\
@@ -443,7 +602,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • INDICADORES:\n\
                        * após o IP = mesmo atacante visto múltiplas vezes (coluna Hits).\n\
                        CRIT: Crítico  |  MED: Médio  |  ALRT: Alerta  |  SCAN: Varrimento\n\n\
-                     [Prime 'I' ou 'ESC' para voltar ao painel]",
+                     [j/k ou ↑↓ scroll | I/ESC voltar]",
                     trap_ports_str
                 ),
             ),
@@ -460,7 +619,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        (country + city) and classified with risk badges.\n\
                        Active trap ports: {}\n\n\
                      • SHORTCUTS:\n\
-                       [↑↓]  Scroll: Navigate incident history (keeps last 100).\n\
+                       [↑↓ / j/k] Scroll: Navigate incident history or this manual.\n\
                        [F]   Filter: Cycle severity filter (All / Critical / Medium+).\n\
                        [W]   Warnings: Checks risky listening ports and fix commands.\n\
                        [K]   Killswitch: Disconnects the system from all networks.\n\
@@ -474,20 +633,23 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • INDICATORS:\n\
                        * after IP = same attacker seen multiple times (Hits column).\n\
                        CRIT: Critical  |  MED: Medium  |  ALRT: Alert  |  SCAN: Scan/Sweep\n\n\
-                     [Press 'I' or 'ESC' to return]",
+                     [j/k or ↑↓ scroll | I/ESC return]",
                     trap_ports_str
                 ),
             ),
         };
 
+        let final_title = format_modal_title(modal_title, modal_scroll);
+
         let modal_p = Paragraph::new(modal_body)
             .style(Style::default().fg(Color::White))
             .wrap(Wrap { trim: true })
+            .scroll((modal_scroll, 0))
             .alignment(Alignment::Left)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(modal_title)
+                    .title(final_title)
                     .style(Style::default().bg(Color::Black).fg(Color::Cyan)),
             );
 
@@ -533,5 +695,63 @@ mod tests {
         let r2 = centered_rect(150, 200, area);
         assert!(r2.width <= 100);
         assert!(r2.height <= 50);
+    }
+
+    #[test]
+    fn test_extract_time_str() {
+        assert_eq!(extract_time_str("2026-10-26 12:34:56"), "12:34:56");
+        assert_eq!(extract_time_str("12:34:56"), "12:34:56");
+        assert_eq!(extract_time_str(""), "");
+    }
+
+    #[test]
+    fn test_abbreviate_severity() {
+        assert_eq!(abbreviate_severity("CRÍTICO"), "CRIT");
+        assert_eq!(abbreviate_severity("MÉDIO"), "MED");
+        assert_eq!(abbreviate_severity("ALERTA"), "ALRT");
+        assert_eq!(abbreviate_severity("SWEEP"), "SWP");
+        assert_eq!(abbreviate_severity("SCAN"), "SCAN");
+        assert_eq!(abbreviate_severity("OUTRO"), "INFO");
+    }
+
+    #[test]
+    fn test_get_table_columns_mobile_and_desktop() {
+        // Modo Ultra-Compacto Termux (< 70 colunas)
+        let (mobile_h, mobile_c) = get_table_columns(60, Language::Pt);
+        assert_eq!(mobile_h.len(), 4);
+        assert_eq!(mobile_c.len(), 4);
+        assert_eq!(mobile_h, vec!["Hora", "Risco", "Origem", "Alvo"]);
+
+        // Modo Compacto (70..95 colunas)
+        let (compact_h, compact_c) = get_table_columns(80, Language::Pt);
+        assert_eq!(compact_h.len(), 5);
+        assert_eq!(compact_c.len(), 5);
+        assert_eq!(
+            compact_h,
+            vec!["Hora", "Risco", "IP Origem", "Alvo", "Localização"]
+        );
+
+        // Modo Desktop Alargado (>= 95 colunas)
+        let (desktop_h, desktop_c) = get_table_columns(120, Language::Pt);
+        assert_eq!(desktop_h.len(), 7);
+        assert_eq!(desktop_c.len(), 7);
+        assert_eq!(
+            desktop_h,
+            vec![
+                "Timestamp",
+                "Risco",
+                "IP Origem",
+                "Hits",
+                "Alvo / Serviço",
+                "Localização",
+                "ISP",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_format_modal_title() {
+        assert_eq!(format_modal_title(" [#] MANUAL ", 0), " [#] MANUAL ");
+        assert_eq!(format_modal_title(" [#] MANUAL ", 5), " [#] MANUAL [+5] ");
     }
 }

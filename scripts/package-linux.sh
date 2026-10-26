@@ -4,13 +4,20 @@ set -e
 BIN_PATH="$1"
 TARGET_NAME="$2"
 ASSET_NAME="$3"
+VERSION="${4:-}"
 
 if [ -z "$BIN_PATH" ] || [ -z "$TARGET_NAME" ] || [ -z "$ASSET_NAME" ]; then
-    echo "Uso: $0 <caminho-binario> <target> <asset-name>"
+    echo "Uso: $0 <caminho-binario> <target> <asset-name> [versao]"
     exit 1
 fi
 
-VERSION="0.3.0"
+if [ -z "$VERSION" ]; then
+    if [ -f "Cargo.toml" ]; then
+        VERSION="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
+    else
+        VERSION="0.3.1"
+    fi
+fi
 
 calc_sha256() {
     local file="$1"
@@ -46,36 +53,45 @@ fi
 DEB_ROOT="sentinela_deb_pkg"
 rm -rf "$DEB_ROOT"
 mkdir -p "${DEB_ROOT}/DEBIAN"
-mkdir -p "${DEB_ROOT}/usr/local/bin"
+mkdir -p "${DEB_ROOT}/usr/bin"
 mkdir -p "${DEB_ROOT}/usr/share/doc/sentinela"
 
-cp "$BIN_PATH" "${DEB_ROOT}/usr/local/bin/sentinela"
-chmod 755 "${DEB_ROOT}/usr/local/bin/sentinela"
+cp "$BIN_PATH" "${DEB_ROOT}/usr/bin/sentinela"
+chmod 755 "${DEB_ROOT}/usr/bin/sentinela"
 cp README.md LICENSE "${DEB_ROOT}/usr/share/doc/sentinela/"
 
-cat << 'EOF' > "${DEB_ROOT}/DEBIAN/control"
+cat << EOF > "${DEB_ROOT}/DEBIAN/control"
 Package: sentinela
-Version: 0.3.0
+Version: ${VERSION}
 Section: utils
 Priority: optional
-Architecture: DEB_ARCH_PLACEHOLDER
+Architecture: ${DEB_ARCH}
 Maintainer: Salvador Pontes <123838416+teizinh@users.noreply.github.com>
+Depends: libc6 (>= 2.31)
+Recommends: libcap2-bin
 Description: Sentinela - Honeypot & Network Intrusion Detection System
  Sistema leve de deteção de intrusões (NIDS) e armadilhas honeypot em Rust.
+
 EOF
-sed -i "s/DEB_ARCH_PLACEHOLDER/${DEB_ARCH}/" "${DEB_ROOT}/DEBIAN/control"
 
 cat << 'EOF' > "${DEB_ROOT}/DEBIAN/postinst"
 #!/bin/sh
 set -e
 if command -v setcap >/dev/null 2>&1; then
-    setcap cap_net_raw,cap_net_admin+eip /usr/local/bin/sentinela 2>/dev/null || true
+    setcap cap_net_raw,cap_net_admin+eip /usr/bin/sentinela 2>/dev/null || true
 fi
 EOF
 chmod 755 "${DEB_ROOT}/DEBIAN/postinst"
 
+cat << 'EOF' > "${DEB_ROOT}/DEBIAN/postrm"
+#!/bin/sh
+set -e
+exit 0
+EOF
+chmod 755 "${DEB_ROOT}/DEBIAN/postrm"
+
 if command -v dpkg-deb >/dev/null 2>&1; then
-    dpkg-deb --build "${DEB_ROOT}" "${ASSET_NAME}.deb"
+    dpkg-deb -Zxz --root-owner-group --build "${DEB_ROOT}" "${ASSET_NAME}.deb"
     calc_sha256 "${ASSET_NAME}.deb" > "${ASSET_NAME}.deb.sha256"
 fi
 rm -rf "$DEB_ROOT"

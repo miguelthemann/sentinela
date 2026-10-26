@@ -95,6 +95,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut killswitch_failed = false;
     let mut show_help = false;
     let mut show_warnings = false;
+    let mut show_incident_modal = false;
+    let mut banned_ips: HashSet<String> = HashSet::new();
+    let mut toast_message: Option<(String, Instant)> = None;
     let mut cached_warnings: Vec<PortWarning> = Vec::new();
     let mut scroll_offset: usize = 0;
     let mut modal_scroll: u16 = 0;
@@ -158,10 +161,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Calcula a lista filtrada para passar à UI e para gerir scroll
-        let filtered_count = incidents
+        let filtered_incidents: Vec<&Incident> = incidents
             .iter()
             .filter(|i| severity_filter.matches(&i.severity))
-            .count();
+            .collect();
+        let filtered_count = filtered_incidents.len();
+
+        let selected_incident: Option<&Incident> = if filtered_count > 0 {
+            filtered_incidents.get(scroll_offset).copied()
+        } else {
+            None
+        };
+
+        let active_toast = toast_message.as_ref().and_then(|(msg, inst)| {
+            if inst.elapsed() < Duration::from_millis(3500) {
+                Some(msg.as_str())
+            } else {
+                None
+            }
+        });
 
         terminal.draw(|f| {
             let ui_ctx = ui::UiContext {
@@ -183,6 +201,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 port_stats: &port_stats,
                 trap_ports: &trap_ports,
                 scanner_active,
+                selected_incident,
+                show_incident_modal,
+                banned_ips: &banned_ips,
+                toast_message: active_toast,
             };
             ui::render_ui(f, &ui_ctx);
         })?;
@@ -200,20 +222,70 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
 
-                if show_help || show_warnings {
+                if show_help || show_warnings || show_incident_modal {
                     match key.code {
                         KeyCode::Char('i' | 'I') => {
                             show_help = false;
+                            show_incident_modal = false;
                             modal_scroll = 0;
                         }
                         KeyCode::Char('w' | 'W') => {
                             show_warnings = false;
+                            show_incident_modal = false;
                             modal_scroll = 0;
                         }
-                        KeyCode::Esc => {
+                        KeyCode::Esc | KeyCode::Enter => {
                             show_help = false;
                             show_warnings = false;
+                            show_incident_modal = false;
                             modal_scroll = 0;
+                        }
+                        // Banir / Desbanir IP do atacante dentro da modal de raio-X
+                        KeyCode::Char('b' | 'B') if show_incident_modal => {
+                            if let Some(inc) = selected_incident {
+                                let target_ip = inc.ip.clone();
+                                if banned_ips.contains(&target_ip) {
+                                    match network::unban_ip(&target_ip) {
+                                        Ok(()) => {
+                                            banned_ips.remove(&target_ip);
+                                            toast_message = Some((
+                                                format!("[✓] IP {} desbanido do firewall", target_ip),
+                                                Instant::now(),
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            toast_message = Some((format!("[!] Erro: {}", e), Instant::now()));
+                                        }
+                                    }
+                                } else {
+                                    match network::ban_ip(&target_ip) {
+                                        Ok(()) => {
+                                            banned_ips.insert(target_ip.clone());
+                                            toast_message = Some((
+                                                format!("[🚨] IP {} bloqueado com sucesso (DROP)", target_ip),
+                                                Instant::now(),
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            toast_message = Some((format!("[!] Erro: {}", e), Instant::now()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Exportar relatório completo de Threat Intel
+                        KeyCode::Char('e' | 'E') => {
+                            match network::export_threat_report(&incidents, &banned_ips, &sys_info, lang) {
+                                Ok((json_f, csv_f)) => {
+                                    toast_message = Some((
+                                        format!("[✓] Relatório exportado: {} e {}", json_f, csv_f),
+                                        Instant::now(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    toast_message = Some((format!("[!] Falha na exportação: {}", e), Instant::now()));
+                                }
+                            }
                         }
                         KeyCode::Down | KeyCode::Char('j' | 'J') => {
                             modal_scroll = modal_scroll.saturating_add(1).min(200);
@@ -235,6 +307,60 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 } else {
                     match key.code {
                         KeyCode::Char('q' | 'Q') => break,
+                        // Abrir raio-X detalhado do incidente selecionado
+                        KeyCode::Enter => {
+                            if selected_incident.is_some() {
+                                show_incident_modal = true;
+                                modal_scroll = 0;
+                            }
+                        }
+                        // Banir / Desbanir cirurgicamente o IP selecionado
+                        KeyCode::Char('b' | 'B') => {
+                            if let Some(inc) = selected_incident {
+                                let target_ip = inc.ip.clone();
+                                if banned_ips.contains(&target_ip) {
+                                    match network::unban_ip(&target_ip) {
+                                        Ok(()) => {
+                                            banned_ips.remove(&target_ip);
+                                            toast_message = Some((
+                                                format!("[✓] IP {} desbanido do firewall", target_ip),
+                                                Instant::now(),
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            toast_message = Some((format!("[!] Erro: {}", e), Instant::now()));
+                                        }
+                                    }
+                                } else {
+                                    match network::ban_ip(&target_ip) {
+                                        Ok(()) => {
+                                            banned_ips.insert(target_ip.clone());
+                                            toast_message = Some((
+                                                format!("[🚨] IP {} bloqueado com sucesso (DROP)", target_ip),
+                                                Instant::now(),
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            toast_message = Some((format!("[!] Erro: {}", e), Instant::now()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Exportar relatório completo de Threat Intel (JSON e CSV)
+                        KeyCode::Char('e' | 'E') => {
+                            match network::export_threat_report(&incidents, &banned_ips, &sys_info, lang) {
+                                Ok((json_f, csv_f)) => {
+                                    toast_message = Some((
+                                        format!("[✓] Relatório exportado: {} e {}", json_f, csv_f),
+                                        Instant::now(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    toast_message = Some((format!("[!] Falha na exportação: {}", e), Instant::now()));
+                                }
+                            }
+                        }
                         KeyCode::Char('i' | 'I') => {
                             show_help = true;
                             modal_scroll = 0;
@@ -339,6 +465,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let _ = network::toggle_network(false);
     }
 
+    // Se foram banidos IPs com DROP no firewall, remove as regras ao sair
+    for ip in &banned_ips {
+        let _ = network::unban_ip(ip);
+    }
+
     restore_terminal();
 
     let duration = start_time.elapsed();
@@ -374,7 +505,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let scan_count = severity_stats.get("SCAN").copied().unwrap_or(0);
     let sweep_count = severity_stats.get("SWEEP").copied().unwrap_or(0);
 
-    let (title, time_lbl, det_lbl, ip_lbl, top_ip_lbl, port_lbl, sev_lbl, log_lbl) = match lang {
+    let (title, time_lbl, det_lbl, ip_lbl, top_ip_lbl, port_lbl, sev_lbl, ban_lbl, log_lbl) = match lang {
         Language::Pt => (
             "[#]  RELATÓRIO DE SESSÃO - SENTINELA",
             "Tempo em Guarda",
@@ -383,6 +514,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "IP Mais Ativo",
             "Porta Mais Visada",
             "Severidade",
+            "IPs Bloqueados",
             "Registo Diário",
         ),
         Language::En => (
@@ -393,6 +525,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "Most Active IP",
             "Top Target Port",
             "Severity Breakdown",
+            "Blocked IPs",
             "Daily Log File",
         ),
     };
@@ -450,6 +583,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!(" [!] {top_ip_lbl:<lbl_w$} : \x1b[1;31m{top_ip_info}\x1b[0m");
     println!(" [>] {port_lbl:<lbl_w$} : \x1b[1;31m{top_port_info}\x1b[0m");
     println!(" [!] {sev_lbl:<lbl_w$} : {sev_breakdown}");
+    if !banned_ips.is_empty() {
+        println!(" [🛡] {ban_lbl:<lbl_w$} : \x1b[1;31m{} (DROP)\x1b[0m", banned_ips.len());
+    }
     println!("{subbar}");
     println!(" [#] {:<lbl_w$} : {os_line}", "SO / Kernel");
     println!(" [#] {log_lbl:<lbl_w$} : \x1b[1;32m{display_log}\x1b[0m");
@@ -473,6 +609,9 @@ fn print_help() {
     println!("  -v, --version   Apresenta a versão do Sentinela\n");
     println!("\x1b[1mATALHOS NO DASHBOARD:\x1b[0m");
     println!("  q / Ctrl+C      Sair do Sentinela e restaurar terminal");
+    println!("  ↵ (Enter)       Raio-X forense detalhado do incidente selecionado");
+    println!("  b               Banir / Desbanir IP do atacante (DROP firewall)");
+    println!("  e               Exportar Threat Intelligence da sessão (JSON + CSV)");
     println!("  i               Abrir / Fechar janela de ajuda (Help Modal)");
     println!("  w               Consultar auditor de portas vulneráveis abertas");
     println!("  l               Alternar idioma entre Português e Inglês");

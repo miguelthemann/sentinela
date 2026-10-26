@@ -23,7 +23,7 @@ pub use non_linux::*;
 #[cfg(target_os = "linux")]
 mod linux {
     use crate::models::Incident;
-    use crate::network::inspect_ip;
+    use crate::network::{inspect_ip, resolve_rdns};
     use crate::traps::classify_port;
     use chrono::Local;
     use pnet::datalink::{self, Channel};
@@ -187,6 +187,7 @@ mod linux {
                                                 rt.spawn(async move {
                                                     let (country, city, isp) =
                                                         inspect_ip(src_ip).await;
+                                                    let rdns = resolve_rdns(src_ip).await;
                                                     let _ = tx2.send(Incident {
                                                         timestamp: Local::now()
                                                             .format("%Y-%m-%d %H:%M:%S")
@@ -202,6 +203,7 @@ mod linux {
                                                         country,
                                                         city,
                                                         isp,
+                                                        rdns,
                                                         hit_count: 1,
                                                     });
                                                 });
@@ -240,6 +242,7 @@ mod linux {
                                                     rt.spawn(async move {
                                                         let (country, city, isp) =
                                                             inspect_ip(src_ip).await;
+                                                        let rdns = resolve_rdns(src_ip).await;
                                                         let ports_str = if swept.len() > 6 {
                                                             let sample = swept[..6]
                                                                 .iter()
@@ -272,6 +275,7 @@ mod linux {
                                                             country,
                                                             city,
                                                             isp,
+                                                            rdns,
                                                             hit_count: 1,
                                                         });
                                                     });

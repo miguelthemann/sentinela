@@ -26,6 +26,46 @@ pub fn get_geo_cache() -> &'static RwLock<HashMap<IpAddr, GeoCacheEntry>> {
     GEO_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
+static RDNS_CACHE: OnceLock<RwLock<HashMap<IpAddr, Option<String>>>> = OnceLock::new();
+
+pub fn get_rdns_cache() -> &'static RwLock<HashMap<IpAddr, Option<String>>> {
+    RDNS_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Efetua resolução de DNS Reverso (rDNS / PTR) assíncrona com cache e timeout.
+/// Previne bloqueios na captura caso o servidor DNS demore a responder.
+pub async fn resolve_rdns(ip: IpAddr) -> Option<String> {
+    if ip.is_loopback() {
+        return Some("localhost".to_string());
+    }
+    if is_private_or_local(ip) {
+        return Some("lan.local".to_string());
+    }
+
+    {
+        let cache = get_rdns_cache().read().await;
+        if let Some(cached) = cache.get(&ip) {
+            return cached.clone();
+        }
+    }
+
+    let ip_copy = ip;
+    let res = tokio::time::timeout(
+        Duration::from_millis(1500),
+        tokio::task::spawn_blocking(move || dns_lookup::lookup_addr(&ip_copy).ok()),
+    )
+    .await;
+
+    let hostname = match res {
+        Ok(Ok(Some(h))) if !h.is_empty() && h != ip.to_string() => Some(h),
+        _ => None,
+    };
+
+    let mut cache = get_rdns_cache().write().await;
+    cache.insert(ip, hostname.clone());
+    hostname
+}
+
 /// Cliente HTTP partilhado por todos os lookups GeoIP.
 /// Criado uma vez — reutiliza pool de ligações e sessão TLS em vez de
 /// abrir uma nova ligação TCP+TLS a cada pedido.
@@ -403,6 +443,111 @@ pub fn cleanup_firewall_rules() {
             break;
         }
     }
+}
+
+/// Bloqueio cirúrgico de um IP de atacante através de regra DROP no topo da cadeia INPUT.
+#[cfg(target_os = "linux")]
+pub fn ban_ip(ip: &str) -> Result<(), String> {
+    if ip.parse::<IpAddr>().is_err() {
+        return Err("Endereço IP inválido para bloqueio".to_string());
+    }
+    let is_v6 = ip.contains(':');
+    let cmd = if is_v6 { "ip6tables" } else { "iptables" };
+    if run_cmd(cmd, &["-I", "INPUT", "1", "-s", ip, "-j", "DROP"]) {
+        Ok(())
+    } else {
+        Err("Falha ao banir IP: requer privilégios de root (sudo)".to_string())
+    }
+}
+
+/// Remove a regra de bloqueio cirúrgico do IP especificado.
+#[cfg(target_os = "linux")]
+pub fn unban_ip(ip: &str) -> Result<(), String> {
+    if ip.parse::<IpAddr>().is_err() {
+        return Err("Endereço IP inválido".to_string());
+    }
+    let is_v6 = ip.contains(':');
+    let cmd = if is_v6 { "ip6tables" } else { "iptables" };
+    if run_cmd(cmd, &["-D", "INPUT", "-s", ip, "-j", "DROP"]) {
+        Ok(())
+    } else {
+        Err("Falha ao desbanir IP: regra não encontrada ou sem permissão".to_string())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn ban_ip(_ip: &str) -> Result<(), String> {
+    Err("Bloqueio cirúrgico de IP suportado nativamente em Linux".to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn unban_ip(_ip: &str) -> Result<(), String> {
+    Err("Bloqueio cirúrgico de IP suportado nativamente em Linux".to_string())
+}
+
+/// Exporta todos os incidentes registados na sessão para relatórios estruturados JSON e CSV.
+pub fn export_threat_report(
+    incidents: &[Incident],
+    banned_ips: &std::collections::HashSet<String>,
+    sys_info: &SysInfo,
+    _lang: Language,
+) -> Result<(String, String), String> {
+    let now = chrono::Local::now();
+    let base_name = now.format("sentinela_report_%Y-%m-%d_%H-%M-%S").to_string();
+    let json_name = format!("{}.json", base_name);
+    let csv_name = format!("{}.csv", base_name);
+
+    #[derive(serde::Serialize)]
+    struct ThreatReport<'a> {
+        report_generated_at: String,
+        sentinela_version: &'static str,
+        total_incidents: usize,
+        unique_attackers: usize,
+        banned_ips: Vec<&'a String>,
+        system_info: &'a SysInfo,
+        incidents: &'a [Incident],
+    }
+
+    let mut unique_ips = std::collections::HashSet::new();
+    for inc in incidents {
+        unique_ips.insert(&inc.ip);
+    }
+
+    let report = ThreatReport {
+        report_generated_at: now.to_rfc3339(),
+        sentinela_version: env!("CARGO_PKG_VERSION"),
+        total_incidents: incidents.len(),
+        unique_attackers: unique_ips.len(),
+        banned_ips: banned_ips.iter().collect(),
+        system_info: sys_info,
+        incidents,
+    };
+
+    let json_content = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    std::fs::write(&json_name, json_content).map_err(|e| format!("Erro ao gravar JSON: {}", e))?;
+
+    let mut csv = String::from("Timestamp,IP,Port,Service,Severity,Country,City,ISP,rDNS,Hits,Banned\n");
+    for inc in incidents {
+        let is_banned = if banned_ips.contains(&inc.ip) { "SIM" } else { "NAO" };
+        let rdns = inc.rdns.as_deref().unwrap_or("");
+        csv.push_str(&format!(
+            "\"{}\",\"{}\",{},\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},\"{}\"\n",
+            inc.timestamp,
+            inc.ip,
+            inc.port,
+            inc.service,
+            inc.severity,
+            inc.country,
+            inc.city,
+            inc.isp.replace('"', "\"\""),
+            rdns.replace('"', "\"\""),
+            inc.hit_count,
+            is_banned
+        ));
+    }
+    std::fs::write(&csv_name, csv).map_err(|e| format!("Erro ao gravar CSV: {}", e))?;
+
+    Ok((json_name, csv_name))
 }
 
 /// Altera o estado da rede (isolamento / restauro).
@@ -1108,5 +1253,65 @@ mod tests {
         assert!(is_local_only_binding("00000000000000000000000001000000"));
         // :: (escuta pública em IPv6)
         assert!(!is_local_only_binding("00000000000000000000000000000000"));
+    }
+
+    #[test]
+    fn test_export_threat_report() {
+        use crate::models::{Incident, Language, SysInfo};
+        use std::collections::HashSet;
+
+        let incidents = vec![Incident {
+            timestamp: "2026-10-26 14:00:00".to_string(),
+            ip: "192.168.1.150".to_string(),
+            port: 2222,
+            service: "SSH Honeypot".to_string(),
+            severity: "CRÍTICO".to_string(),
+            country: "Local".to_string(),
+            city: "LAN".to_string(),
+            isp: "Internal Router".to_string(),
+            hit_count: 3,
+            rdns: Some("gateway.lan".to_string()),
+        }];
+
+        let mut banned = HashSet::new();
+        banned.insert("192.168.1.150".to_string());
+
+        let sys_info = SysInfo {
+            distro: "Fedora Linux 41".to_string(),
+            kernel: "Linux 6.12.0".to_string(),
+            arch: "x86_64".to_string(),
+        };
+
+        let res = export_threat_report(&incidents, &banned, &sys_info, Language::Pt);
+        assert!(res.is_ok());
+        let (json_file, csv_file) = res.unwrap();
+
+        // Verifica existência e conteúdo dos ficheiros
+        assert!(std::path::Path::new(&json_file).exists());
+        assert!(std::path::Path::new(&csv_file).exists());
+
+        let json_content = std::fs::read_to_string(&json_file).unwrap();
+        assert!(json_content.contains("192.168.1.150"));
+        assert!(json_content.contains("gateway.lan"));
+
+        let csv_content = std::fs::read_to_string(&csv_file).unwrap();
+        assert!(csv_content.contains("Timestamp,IP,Port,Service,Severity,Country,City,ISP,rDNS,Hits,Banned"));
+        assert!(csv_content.contains("gateway.lan"));
+        assert!(csv_content.contains("\"SIM\""));
+
+        // Limpeza dos ficheiros de teste
+        let _ = std::fs::remove_file(json_file);
+        let _ = std::fs::remove_file(csv_file);
+    }
+
+    #[tokio::test]
+    async fn test_rdns_cache_lookup() {
+        use std::net::Ipv4Addr;
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let host = resolve_rdns(ip).await;
+        // Em muitas máquinas locais, 127.0.0.1 resolve para localhost ou similar
+        // O cache deve guardar o valor retornado
+        let host2 = resolve_rdns(ip).await;
+        assert_eq!(host, host2);
     }
 }

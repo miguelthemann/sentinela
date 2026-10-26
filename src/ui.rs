@@ -26,6 +26,10 @@ pub struct UiContext<'a> {
     pub port_stats: &'a HashMap<u16, usize>,
     pub trap_ports: &'a [u16],
     pub scanner_active: bool,
+    pub selected_incident: Option<&'a Incident>,
+    pub show_incident_modal: bool,
+    pub banned_ips: &'a std::collections::HashSet<String>,
+    pub toast_message: Option<&'a str>,
 }
 
 pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
@@ -139,6 +143,10 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         port_stats,
         trap_ports,
         scanner_active,
+        selected_incident,
+        show_incident_modal,
+        banned_ips,
+        toast_message,
     } = *ctx;
 
     // Em modo mobile ou ecrãs curtos (como Termux no telemóvel), remove margens externas
@@ -357,7 +365,10 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         .filter(|i| severity_filter.matches(&i.severity))
         .collect();
 
-    let rows = filtered.iter().skip(scroll_offset).map(|item| {
+    let rows = filtered.iter().skip(scroll_offset).enumerate().map(|(idx, item)| {
+        let is_selected_row = idx == 0;
+        let is_banned = banned_ips.contains(&item.ip);
+
         let risk_color = match item.severity.as_str() {
             "CRÍTICO" => Color::Red,
             "SWEEP" => Color::Red, // varrimento amplo = tão sério quanto crítico
@@ -397,8 +408,10 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             format!(":{}", item.port)
         };
 
-        // Indica consistentemente com * os IPs com múltiplos hits (tanto em modo compacto como expandido)
-        let ip_display = if item.hit_count > 1 {
+        // Indica [BAN] se banido, ou * se tiver múltiplos hits
+        let ip_display = if is_banned {
+            format!("{} [BAN]", item.ip)
+        } else if item.hit_count > 1 {
             format!("{}*", item.ip)
         } else {
             item.ip.clone()
@@ -443,7 +456,18 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             ]
         };
 
-        Row::new(cells).style(Style::default().fg(Color::White))
+        let row_style = if is_selected_row {
+            Style::default()
+                .fg(Color::Yellow)
+                .bg(Color::Rgb(25, 38, 58))
+                .add_modifier(Modifier::BOLD)
+        } else if is_banned {
+            Style::default().fg(Color::LightRed)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        Row::new(cells).style(row_style)
     });
 
     let filter_label_display = severity_filter.label(lang);
@@ -471,26 +495,34 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
 
     f.render_widget(table, chunks[1]);
 
-    // 3. Rodapé Responsivo com Atalhos
-    let footer_text = if screen_width < 55 {
+    // 3. Rodapé Responsivo com Atalhos & Notificações
+    let footer_text = if let Some(toast) = toast_message {
+        toast.to_string()
+    } else if screen_width < 60 {
         match lang {
-            Language::Pt => " [Q]Sair [K]Kill [F]Filtro [W]Avisos [↑↓]Nav",
-            Language::En => " [Q]Quit [K]Kill [F]Filter [W]Warn [↑↓]Nav",
+            Language::Pt => " [↵]Raio-X [B]Ban [E]Export [Q]Sair [K]Kill".to_string(),
+            Language::En => " [↵]Inspect [B]Ban [E]Export [Q]Quit [K]Kill".to_string(),
         }
-    } else if screen_width < 75 {
+    } else if screen_width < 90 {
         match lang {
-            Language::Pt => " [Q]Sair [K]Kill [F]Filtro [W]Avisos [I]Ajuda [↑↓]Nav",
-            Language::En => " [Q]Quit [K]Kill [F]Filter [W]Warn [I]Help [↑↓]Nav",
+            Language::Pt => " [↵] Raio-X | [B] Banir IP | [E] Exportar | [K] Kill | [W] Avisos | [I] Ajuda | [Q] Sair".to_string(),
+            Language::En => " [↵] Inspect | [B] Ban IP | [E] Export | [K] Kill | [W] Warn | [I] Help | [Q] Quit".to_string(),
         }
     } else {
         match lang {
-            Language::Pt => " [K] Killswitch (Liga/Desliga) | [R] Repor | [W] Avisos | [I] Manual | [F] Filtro | [↑↓/Pg] Scroll | [L] Idioma | [Q] Sair ",
-            Language::En => " [K] Killswitch (Toggle) | [R] Restore | [W] Warnings | [I] Manual | [F] Filter | [↑↓/Pg] Scroll | [L] Language | [Q] Quit ",
+            Language::Pt => " [↵] Raio-X Detalhado | [B] Banir IP | [E] Exportar Relatório | [K] Killswitch | [W] Avisos | [I] Manual | [F] Filtro | [L] Idioma | [Q] Sair ".to_string(),
+            Language::En => " [↵] Deep Inspection | [B] Ban IP | [E] Export Threat Intel | [K] Killswitch | [W] Warnings | [I] Manual | [F] Filter | [L] Language | [Q] Quit ".to_string(),
         }
     };
 
+    let footer_style = if toast_message.is_some() {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+
     let footer = Paragraph::new(footer_text)
-        .style(Style::default().fg(Color::Cyan))
+        .style(footer_style)
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(footer, chunks[2]);
 
@@ -589,6 +621,9 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        Portas ativas: {}\n\n\
                      • ATALHOS:\n\
                        [↑↓ / j/k] Scroll: Navegar nos incidentes ou neste manual.\n\
+                       [↵]   Raio-X: Inspeção forense aprofundada do incidente selecionado.\n\
+                       [B]   Banir/Desbanir: Bloqueio cirúrgico no firewall (DROP).\n\
+                       [E]   Exportar: Exporta Threat Intel completa da sessão (JSON + CSV).\n\
                        [F]   Filtro: Alternar filtro de severidade (Todos / Críticos / Médio+).\n\
                        [W]   Avisos: Lista portas perigosas abertas e como fechá-las.\n\
                        [K]   Killswitch: Isola o PC da rede imediatamente.\n\
@@ -621,6 +656,9 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        Active trap ports: {}\n\n\
                      • SHORTCUTS:\n\
                        [↑↓ / j/k] Scroll: Navigate incident history or this manual.\n\
+                       [↵]   Forensic X-Ray: Deep inspection modal of selected incident.\n\
+                       [B]   Ban/Unban: Surgical firewall drop rule for attacker IP.\n\
+                       [E]   Export: Dump Threat Intel session report to JSON and CSV.\n\
                        [F]   Filter: Cycle severity filter (All / Critical / Medium+).\n\
                        [W]   Warnings: Checks risky listening ports and fix commands.\n\
                        [K]   Killswitch: Disconnects the system from all networks.\n\
@@ -656,6 +694,134 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             );
 
         f.render_widget(modal_p, area);
+    }
+
+    // 6. Modal de Raio-X Detalhado de Incidente (Tecla Enter)
+    if show_incident_modal {
+        if let Some(inc) = selected_incident {
+            let area = centered_rect(modal_w, modal_h, f.area());
+            f.render_widget(Clear, area);
+
+            let is_banned = banned_ips.contains(&inc.ip);
+            let ban_status = if is_banned {
+                match lang {
+                    Language::Pt => "🛑 BLOQUEADO (DROP ativo no firewall)",
+                    Language::En => "🛑 BANNED (DROP rule active on firewall)",
+                }
+            } else {
+                match lang {
+                    Language::Pt => "ATIVO (Tráfego permitido)",
+                    Language::En => "ACTIVE (Traffic allowed)",
+                }
+            };
+
+            let rdns_display = inc.rdns.as_deref().unwrap_or(match lang {
+                Language::Pt => "Sem registo PTR / Não resolvido",
+                Language::En => "No PTR record / Unresolved",
+            });
+
+            let modal_title = match lang {
+                Language::Pt => format!(" [🔬] RAIO-X DE INCIDENTE: {} ", inc.ip),
+                Language::En => format!(" [🔬] INCIDENT DEEP INSPECTION: {} ", inc.ip),
+            };
+
+            let target_str = if inc.port == 0 {
+                inc.service.clone()
+            } else {
+                format!("Porta {} ({})", inc.port, inc.service)
+            };
+
+            let quick_firewall = format!("iptables -I INPUT 1 -s {} -j DROP", inc.ip);
+
+            let body = match lang {
+                Language::Pt => format!(
+                    "DETALHES DO ATACANTE & ATIVIDADE SUSPEITA\n\
+                     -------------------------------------------------------------\n\
+                     • Endereço IP:         {}\n\
+                     • DNS Reverso (rDNS):  {}\n\
+                     • Estado no Firewall:  {}\n\
+                     • Nível de Severidade: {}\n\
+                     • Vezes Visto (Hits):  {} conexão(ões)\n\
+                     • Carimbo de Data/Hora:{}\n\n\
+                     GEOLOCALIZAÇÃO & REDE:\n\
+                     • País:                {}\n\
+                     • Cidade:              {}\n\
+                     • Fornecedor / ISP:    {}\n\n\
+                     ALVO NA MÁQUINA LOCAL:\n\
+                     • Serviço / Porta:     {}\n\n\
+                     MITIGAÇÃO RECOMENDADA (FIREWALL):\n\
+                     • Regra rápida:\n\
+                       {}\n\n\
+                     AÇÕES DISPONÍVEIS:\n\
+                     [B]   {} este IP no firewall\n\
+                     [E]   Exportar relatório completo da sessão (JSON/CSV)\n\
+                     [ESC / Enter] Fechar e regressar ao painel",
+                    inc.ip,
+                    rdns_display,
+                    ban_status,
+                    inc.severity,
+                    inc.hit_count,
+                    inc.timestamp,
+                    inc.country,
+                    if inc.city.is_empty() { "N/D" } else { &inc.city },
+                    inc.isp,
+                    target_str,
+                    quick_firewall,
+                    if is_banned { "Desbloquear / Desbanir" } else { "BLOQUEAR / BANIR" },
+                ),
+                Language::En => format!(
+                    "ATTACKER PROFILE & TELEMETRY\n\
+                     -------------------------------------------------------------\n\
+                     • Source IP Address:   {}\n\
+                     • Reverse DNS (rDNS):  {}\n\
+                     • Firewall Status:     {}\n\
+                     • Threat Severity:     {}\n\
+                     • Probe Count (Hits):  {} connection(s)\n\
+                     • Event Timestamp:     {}\n\n\
+                     GEOLOCATION & NETWORK METADATA:\n\
+                     • Country:             {}\n\
+                     • City:                {}\n\
+                     • ISP / AS Entity:     {}\n\n\
+                     TARGETED LOCAL SERVICE:\n\
+                     • Host Target:         {}\n\n\
+                     FIREWALL REMEDIATION:\n\
+                     • Mitigation command:\n\
+                       {}\n\n\
+                     ACTIONS:\n\
+                     [B]   {} this attacker IP\n\
+                     [E]   Export full session threat report (JSON/CSV)\n\
+                     [ESC / Enter] Close modal and return",
+                    inc.ip,
+                    rdns_display,
+                    ban_status,
+                    inc.severity,
+                    inc.hit_count,
+                    inc.timestamp,
+                    inc.country,
+                    if inc.city.is_empty() { "N/A" } else { &inc.city },
+                    inc.isp,
+                    target_str,
+                    quick_firewall,
+                    if is_banned { "Unban / Allow" } else { "BAN / BLOCK" },
+                ),
+            };
+
+            let final_title = format_modal_title(&modal_title, modal_scroll);
+
+            let modal_p = Paragraph::new(body)
+                .style(Style::default().fg(Color::White))
+                .wrap(Wrap { trim: true })
+                .scroll((modal_scroll, 0))
+                .alignment(Alignment::Left)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(final_title)
+                        .style(Style::default().bg(Color::Black).fg(if is_banned { Color::Red } else { Color::Green })),
+                );
+
+            f.render_widget(modal_p, area);
+        }
     }
 }
 

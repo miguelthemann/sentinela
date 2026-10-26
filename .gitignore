@@ -4,9 +4,11 @@
 # Backup files
 **/*.rs.bk
 
-# Sentinela runtime incident logs
+# Sentinela runtime incident logs and exported reports
 sentinela_*.log
 *.log
+sentinela_report_*.json
+sentinela_report_*.csv
 
 # OS generated files
 .DS_Store

@@ -1,5 +1,5 @@
 use crate::models::Incident;
-use crate::network::inspect_ip;
+use crate::network::{inspect_ip, resolve_rdns};
 use chrono::Local;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
@@ -168,6 +168,7 @@ pub async fn start_traps(
     tokio::spawn(async move {
         while let Some(conn) = queue_rx.recv().await {
             let (country, city, isp) = inspect_ip(conn.attacker_ip).await;
+            let rdns = resolve_rdns(conn.attacker_ip).await;
             let (service, severity) = classify_port(conn.port);
 
             let incident = Incident {
@@ -179,6 +180,7 @@ pub async fn start_traps(
                 country,
                 city,
                 isp,
+                rdns,
                 hit_count: 1, // Inicializado a 1; atualizado pelo ciclo principal com base na contagem real
             };
 

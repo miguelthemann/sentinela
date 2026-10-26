@@ -1,12 +1,12 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Language {
     Pt,
     En,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SysInfo {
     pub distro: String,
     pub kernel: String,
@@ -14,7 +14,7 @@ pub struct SysInfo {
 }
 
 /// Representa uma conexão capturada por uma armadilha (honeypot)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Incident {
     pub timestamp: String,
     pub ip: String,
@@ -24,6 +24,8 @@ pub struct Incident {
     pub country: String,
     pub city: String,
     pub isp: String,
+    /// Hostname DNS reverso obtido assincronamente (se disponível)
+    pub rdns: Option<String>,
     /// Número total de vezes que este IP foi visto na sessão atual
     pub hit_count: usize,
 }

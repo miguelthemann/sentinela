@@ -216,8 +216,25 @@ pub fn get_all_local_ips() -> String {
     }
 }
 
+pub fn is_private_or_local(ip: IpAddr) -> bool {
+    if ip.is_loopback() {
+        return true;
+    }
+    match ip {
+        IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_link_local(),
+        IpAddr::V6(ipv6) => {
+            let segments = ipv6.segments();
+            // fe80::/10 (Link-Local)
+            let is_link_local = (segments[0] & 0xffc0) == 0xfe80;
+            // fc00::/7 (Unique Local Address - ULA)
+            let is_ula = (segments[0] & 0xfe00) == 0xfc00;
+            is_link_local || is_ula
+        }
+    }
+}
+
 /// Devolve (country, city, isp) para o IP fornecido.
-/// Usa cache em memória com TTL de 5 minutos para falhas para permitir novas tentativas.
+/// Usa cache em memória com TTL de 2 minutos para falhas para permitir novas tentativas.
 pub async fn inspect_ip(ip: IpAddr) -> (String, String, String) {
     if ip.is_loopback() {
         return (
@@ -227,95 +244,104 @@ pub async fn inspect_ip(ip: IpAddr) -> (String, String, String) {
         );
     }
 
-    match ip {
-        IpAddr::V4(ipv4) if ipv4.is_private() => (
+    if is_private_or_local(ip) {
+        return (
             "Rede Local (LAN)".to_string(),
             "".to_string(),
             "Dispositivo Interno".to_string(),
-        ),
-        _ => {
-            // 1. Verifica cache em memória primeiro (respeitando TTL para entradas negativas)
-            {
-                let now = std::time::Instant::now();
-                let cache = get_geo_cache().read().await;
-                if let Some(entry) = cache.get(&ip) {
-                    match entry.expires_at {
-                        Some(exp) if now < exp => return entry.geo.clone(),
-                        Some(_) => {} // Cache negativa expirada (passaram > 5 min): tentar novamente
-                        None => return entry.geo.clone(), // Cache positiva válida
-                    }
-                }
-            }
+        );
+    }
 
-            // 2. Efetua pedido HTTP se não estiver na cache ou se a cache negativa tiver expirado
-            let url = format!(
-                "http://ip-api.com/json/{}?fields=status,country,city,isp",
-                ip
-            );
-            let (result, is_negative) = match get_http_client().get(&url).send().await {
-                Ok(resp) => {
-                    if let Ok(geo) = resp.json::<GeoResponse>().await {
-                        if geo.status.as_deref() == Some("success") {
-                            (
-                                (
-                                    geo.country.unwrap_or_else(|| "Desconhecido".to_string()),
-                                    geo.city.unwrap_or_default(),
-                                    geo.isp.unwrap_or_else(|| "Desconhecido".to_string()),
-                                ),
-                                false, // Sucesso: resposta positiva
-                            )
-                        } else {
-                            (
-                                (
-                                    "Internet (WAN)".to_string(),
-                                    "".to_string(),
-                                    "Consulta Externa".to_string(),
-                                ),
-                                true,
-                            )
-                        }
-                    } else {
+    // 1. Verifica cache em memória primeiro (respeitando TTL para entradas negativas)
+    {
+        let now = std::time::Instant::now();
+        let cache = get_geo_cache().read().await;
+        if let Some(entry) = cache.get(&ip) {
+            match entry.expires_at {
+                Some(exp) if now < exp => return entry.geo.clone(),
+                Some(_) => {} // Cache negativa expirada (passaram > 2 min): tentar novamente
+                None => return entry.geo.clone(), // Cache positiva válida
+            }
+        }
+    }
+
+    // 2. Efetua pedido HTTP se não estiver na cache ou se a cache negativa tiver expirado
+    let url = format!(
+        "http://ip-api.com/json/{}?fields=status,country,city,isp",
+        ip
+    );
+    let (result, is_negative) = match get_http_client().get(&url).send().await {
+        Ok(resp) => {
+            if let Ok(geo) = resp.json::<GeoResponse>().await {
+                if geo.status.as_deref() == Some("success") {
+                    (
                         (
-                            (
-                                "Internet (WAN)".to_string(),
-                                "".to_string(),
-                                "Consulta Externa".to_string(),
-                            ),
-                            true,
-                        )
-                    }
+                            geo.country.unwrap_or_else(|| "Desconhecido".to_string()),
+                            geo.city.unwrap_or_default(),
+                            geo.isp.unwrap_or_else(|| "Desconhecido".to_string()),
+                        ),
+                        false, // Sucesso: resposta positiva
+                    )
+                } else {
+                    (
+                        (
+                            "Internet (WAN)".to_string(),
+                            "".to_string(),
+                            "Consulta Externa".to_string(),
+                        ),
+                        true,
+                    )
                 }
-                Err(_) => (
+            } else {
+                (
                     (
                         "Internet (WAN)".to_string(),
                         "".to_string(),
-                        "Sem resposta GeoIP".to_string(),
+                        "Consulta Externa".to_string(),
                     ),
                     true,
-                ),
-            };
-
-            // 3. Guarda em cache: respostas com falha recebem TTL curto (2 min) para retentativa futura
-            // Reduzido de 5 min para 2 min: economiza memória e permite retry mais rápido
-            {
-                let expires_at = if is_negative {
-                    Some(std::time::Instant::now() + Duration::from_secs(120)) // 2 minutos
-                } else {
-                    None
-                };
-                let mut cache = get_geo_cache().write().await;
-                cache.insert(
-                    ip,
-                    GeoCacheEntry {
-                        geo: result.clone(),
-                        expires_at,
-                    },
-                );
+                )
             }
-
-            result
         }
+        Err(_) => (
+            (
+                "Internet (WAN)".to_string(),
+                "".to_string(),
+                "Sem resposta GeoIP".to_string(),
+            ),
+            true,
+        ),
+    };
+
+    // 3. Guarda em cache: respostas com falha recebem TTL curto (2 min) para retentativa futura
+    {
+        let expires_at = if is_negative {
+            Some(std::time::Instant::now() + Duration::from_secs(120)) // 2 minutos
+        } else {
+            None
+        };
+        let mut cache = get_geo_cache().write().await;
+        // Evita crescimento ilimitado da cache se milhares de IPs diferentes forem inspecionados
+        if cache.len() > 5000 {
+            let now = std::time::Instant::now();
+            cache.retain(|_, entry| match entry.expires_at {
+                Some(exp) => now < exp,
+                None => true,
+            });
+            if cache.len() > 5000 {
+                cache.clear();
+            }
+        }
+        cache.insert(
+            ip,
+            GeoCacheEntry {
+                geo: result.clone(),
+                expires_at,
+            },
+        );
     }
+
+    result
 }
 
 #[cfg(target_os = "linux")]
@@ -782,9 +808,14 @@ pub fn send_desktop_alert(incident: &Incident) {
     };
 
     let title = format!("🚨 Sentinela: Intrusão [{}]", incident.severity);
+    let target = if incident.port == 0 {
+        format!("Alvo: {}", incident.service)
+    } else {
+        format!("Alvo: Porta {} ({})", incident.port, incident.service)
+    };
     let body = format!(
-        "IP: {} ({}x)\nAlvo: Porta {} ({})\nOrigem: {}",
-        incident.ip, incident.hit_count, incident.port, incident.service, location
+        "IP: {} ({}x)\n{}\nOrigem: {}",
+        incident.ip, incident.hit_count, target, location
     );
 
     // Executa notificação em thread separada para nunca bloquear o loop principal da TUI
@@ -1032,5 +1063,50 @@ mod tests {
         assert!(is_host_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(is_host_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
         assert!(!is_host_ip(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))));
+    }
+
+    #[test]
+    fn test_is_private_or_local() {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+        // Loopback
+        assert!(is_private_or_local(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(is_private_or_local(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+
+        // IPv4 Privados e Link-Local
+        assert!(is_private_or_local(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(is_private_or_local(IpAddr::V4(Ipv4Addr::new(
+            192, 168, 1, 1
+        ))));
+        assert!(is_private_or_local(IpAddr::V4(Ipv4Addr::new(
+            172, 16, 0, 1
+        ))));
+        assert!(is_private_or_local(IpAddr::V4(Ipv4Addr::new(
+            169, 254, 1, 1
+        ))));
+
+        // IPv6 Link-Local (fe80::/10) e ULA (fc00::/7 / fd00::/8)
+        let fe80 = "fe80::1".parse::<IpAddr>().unwrap();
+        assert!(is_private_or_local(fe80));
+        let fd00 = "fd12:3456:789a::1".parse::<IpAddr>().unwrap();
+        assert!(is_private_or_local(fd00));
+
+        // IPs Públicos
+        assert!(!is_private_or_local(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!is_private_or_local(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+        let pub_v6 = "2001:4860:4860::8888".parse::<IpAddr>().unwrap();
+        assert!(!is_private_or_local(pub_v6));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_is_local_only_binding() {
+        // 127.0.0.1 em little-endian /proc/net/tcp
+        assert!(is_local_only_binding("0100007F"));
+        // 0.0.0.0 (escuta pública em todas as interfaces)
+        assert!(!is_local_only_binding("00000000"));
+        // ::1 loopback em /proc/net/tcp6
+        assert!(is_local_only_binding("00000000000000000000000001000000"));
+        // :: (escuta pública em IPv6)
+        assert!(!is_local_only_binding("00000000000000000000000000000000"));
     }
 }

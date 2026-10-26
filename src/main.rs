@@ -43,20 +43,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+    let raw_args: Vec<String> = env::args().skip(1).collect();
+    if raw_args.iter().any(|a| a == "-h" || a == "--help") {
+        print_help();
+        return Ok(());
+    }
+    if raw_args.iter().any(|a| a == "-v" || a == "--version") {
+        println!("sentinela {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // Lê portas custom passadas como argumento: ./sentinela 2222 8080 9999
     // Se nenhuma for passada, usa as portas padrão
-    let trap_ports: Vec<u16> = {
-        let args: Vec<String> = env::args().skip(1).collect();
-        if args.is_empty() {
+    let trap_ports: Vec<u16> = if raw_args.is_empty() {
+        traps::DEFAULT_TRAP_PORTS.to_vec()
+    } else {
+        let parsed: Vec<u16> = raw_args
+            .iter()
+            .filter_map(|a| a.parse::<u16>().ok())
+            .collect();
+        if parsed.is_empty() {
+            eprintln!("Portas inválidas. A usar portas padrão.");
             traps::DEFAULT_TRAP_PORTS.to_vec()
         } else {
-            let parsed: Vec<u16> = args.iter().filter_map(|a| a.parse::<u16>().ok()).collect();
-            if parsed.is_empty() {
-                eprintln!("Portas inválidas. A usar portas padrão.");
-                traps::DEFAULT_TRAP_PORTS.to_vec()
-            } else {
-                parsed
-            }
+            parsed
         }
     };
 
@@ -111,11 +121,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let mut batch_count = 0;
+        let mut log_batch = Vec::new();
         while let Ok(mut incident) = rx.try_recv() {
             batch_count += 1;
             total_detections_count += 1;
             unique_ips.insert(incident.ip.clone());
-            *port_stats.entry(incident.port).or_insert(0) += 1;
+            if incident.port != 0 {
+                *port_stats.entry(incident.port).or_insert(0) += 1;
+            }
             *severity_stats.entry(incident.severity.clone()).or_insert(0) += 1;
 
             // Atualiza hit_count cumulativo por IP (usando HashMap - O(1) ao invés de O(n))
@@ -123,12 +136,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             *count += 1;
             incident.hit_count = *count;
 
-            // Regista o incidente em disco com o hit_count real
-            traps::log_incident_to_disk(&incident).await;
-
             // Dispara notificação nativa no ambiente gráfico (não bloqueante e com rate limit)
             network::send_desktop_alert(&incident);
 
+            log_batch.push(incident.clone());
             incidents.insert(0, incident);
             // Guarda mais incidentes em memória (100) para permitir scroll
             if incidents.len() > 100 {
@@ -139,6 +150,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if batch_count >= 30 {
                 break; // Processa no máximo 30 incidentes por ciclo para a UI nunca encravar
             }
+        }
+
+        if !log_batch.is_empty() {
+            traps::log_incidents_to_disk(&log_batch).await;
         }
 
         // Calcula a lista filtrada para passar à UI e para gerir scroll
@@ -385,4 +400,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     Ok(())
+}
+
+fn print_help() {
+    println!(
+        "\x1b[1;36mSentinela v{}\x1b[0m - Sistema Leve de Deteção de Intrusões e Armadilhas de Rede\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!("\x1b[1mUSO:\x1b[0m");
+    println!("  sentinela [OPÇÕES] [PORTAS...]\n");
+    println!("\x1b[1mARGUMENTOS:\x1b[0m");
+    println!("  [PORTAS...]     Portas adicionais para escuta de armadilhas (ex: 2222 8080 9999)");
+    println!("                  Padrão: 2121, 2222, 2323, 8080, 8443\n");
+    println!("\x1b[1mOPÇÕES:\x1b[0m");
+    println!("  -h, --help      Apresenta esta mensagem de ajuda");
+    println!("  -v, --version   Apresenta a versão do Sentinela\n");
+    println!("\x1b[1mATALHOS NO DASHBOARD:\x1b[0m");
+    println!("  q / Ctrl+C      Sair do Sentinela e restaurar terminal");
+    println!("  i               Abrir / Fechar janela de ajuda (Help Modal)");
+    println!("  w               Consultar auditor de portas vulneráveis abertas");
+    println!("  l               Alternar idioma entre Português e Inglês");
+    println!("  k               Ativar / Desativar Emergency Network Killswitch");
+    println!("  f               Alternar filtro de severidade (Todos -> Críticos -> Médio+)");
+    println!("  r               Repor estado da rede (desativar killswitch)");
+    println!("  ↑ / ↓           Navegar na tabela de incidentes detetados");
+    println!("  Home / End      Saltar para o topo ou fim da lista");
 }

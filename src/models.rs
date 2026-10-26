@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
     Pt,
     En,
@@ -39,7 +39,7 @@ pub struct PortWarning {
 }
 
 /// Filtro de severidade aplicado à tabela de deteções
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeverityFilter {
     All,
     CriticalOnly,
@@ -86,4 +86,54 @@ pub struct GeoResponse {
     pub city: Option<String>,
     pub isp: Option<String>,
     pub status: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_severity_filter_cycle() {
+        let filter = SeverityFilter::All;
+        assert_eq!(filter.next(), SeverityFilter::CriticalOnly);
+        assert_eq!(filter.next().next(), SeverityFilter::MediumAndAbove);
+        assert_eq!(filter.next().next().next(), SeverityFilter::All);
+    }
+
+    #[test]
+    fn test_severity_filter_matching() {
+        let all = SeverityFilter::All;
+        assert!(all.matches("CRÍTICO"));
+        assert!(all.matches("SWEEP"));
+        assert!(all.matches("MÉDIO"));
+        assert!(all.matches("ALERTA"));
+        assert!(all.matches("SCAN"));
+
+        let crit = SeverityFilter::CriticalOnly;
+        assert!(crit.matches("CRÍTICO"));
+        assert!(crit.matches("SWEEP"));
+        assert!(!crit.matches("MÉDIO"));
+        assert!(!crit.matches("ALERTA"));
+        assert!(!crit.matches("SCAN"));
+
+        let med_plus = SeverityFilter::MediumAndAbove;
+        assert!(med_plus.matches("CRÍTICO"));
+        assert!(med_plus.matches("SWEEP"));
+        assert!(med_plus.matches("MÉDIO"));
+        assert!(!med_plus.matches("ALERTA"));
+        assert!(!med_plus.matches("SCAN"));
+    }
+
+    #[test]
+    fn test_severity_filter_labels() {
+        assert_eq!(SeverityFilter::All.label(Language::Pt), "Todos");
+        assert_eq!(SeverityFilter::All.label(Language::En), "All");
+        assert_eq!(SeverityFilter::CriticalOnly.label(Language::Pt), "Críticos");
+        assert_eq!(SeverityFilter::CriticalOnly.label(Language::En), "Critical");
+        assert_eq!(SeverityFilter::MediumAndAbove.label(Language::Pt), "Médio+");
+        assert_eq!(
+            SeverityFilter::MediumAndAbove.label(Language::En),
+            "Medium+"
+        );
+    }
 }

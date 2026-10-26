@@ -15,7 +15,7 @@ if [ -z "$VERSION" ]; then
     if [ -f "Cargo.toml" ]; then
         VERSION="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)"
     else
-        VERSION="0.3.2"
+        VERSION="0.3.3"
     fi
 fi
 

@@ -20,11 +20,20 @@ pub struct UiContext<'a> {
     pub warnings: &'a [PortWarning],
     pub failed_traps: &'a [u16],
     pub scroll_offset: usize,
+    pub modal_scroll: u16,
     pub severity_filter: SeverityFilter,
     pub severity_stats: &'a HashMap<String, usize>,
     pub port_stats: &'a HashMap<u16, usize>,
     pub trap_ports: &'a [u16],
     pub scanner_active: bool,
+}
+
+pub fn format_modal_title(base_title: &str, scroll_offset: u16) -> String {
+    if scroll_offset > 0 {
+        format!("{} [+{}] ", base_title.trim_end(), scroll_offset)
+    } else {
+        format!("{} ", base_title.trim_end())
+    }
 }
 
 pub fn extract_time_str(timestamp: &str) -> &str {
@@ -124,6 +133,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         warnings,
         failed_traps,
         scroll_offset,
+        modal_scroll,
         severity_filter,
         severity_stats,
         port_stats,
@@ -464,8 +474,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     // 3. Rodapé Responsivo com Atalhos
     let footer_text = if screen_width < 55 {
         match lang {
-            Language::Pt => " [Q]Sair [K]Kill [F]Filtro [W]Avisos",
-            Language::En => " [Q]Quit [K]Kill [F]Filter [W]Warn",
+            Language::Pt => " [Q]Sair [K]Kill [F]Filtro [W]Avisos [↑↓]Nav",
+            Language::En => " [Q]Quit [K]Kill [F]Filter [W]Warn [↑↓]Nav",
         }
     } else if screen_width < 75 {
         match lang {
@@ -474,8 +484,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
         }
     } else {
         match lang {
-            Language::Pt => " [K] Killswitch (Liga/Desliga) | [R] Repor | [W] Avisos | [I] Manual | [F] Filtro | [↑↓] Scroll | [L] Idioma | [Q] Sair ",
-            Language::En => " [K] Killswitch (Toggle) | [R] Restore | [W] Warnings | [I] Manual | [F] Filter | [↑↓] Scroll | [L] Language | [Q] Quit ",
+            Language::Pt => " [K] Killswitch (Liga/Desliga) | [R] Repor | [W] Avisos | [I] Manual | [F] Filtro | [↑↓/Pg] Scroll | [L] Idioma | [Q] Sair ",
+            Language::En => " [K] Killswitch (Toggle) | [R] Restore | [W] Warnings | [I] Manual | [F] Filter | [↑↓/Pg] Scroll | [L] Language | [Q] Quit ",
         }
     };
 
@@ -525,8 +535,8 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             }
 
             match lang {
-                Language::Pt => report.push_str("[Prime 'W' ou 'ESC' para voltar ao painel]"),
-                Language::En => report.push_str("[Press 'W' or 'ESC' to return]"),
+                Language::Pt => report.push_str("[j/k ou ↑↓ scroll | W/ESC voltar]"),
+                Language::En => report.push_str("[j/k or ↑↓ scroll | W/ESC return]"),
             }
 
             let t = match lang {
@@ -536,14 +546,17 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
             (t, report)
         };
 
+        let final_title = format_modal_title(w_title, modal_scroll);
+
         let modal_p = Paragraph::new(w_body)
             .style(Style::default().fg(Color::White))
             .wrap(Wrap { trim: true })
+            .scroll((modal_scroll, 0))
             .alignment(Alignment::Left)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(w_title)
+                    .title(final_title)
                     .style(Style::default().bg(Color::Black).fg(Color::Yellow)),
             );
 
@@ -575,7 +588,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        geolocalizada (país + cidade) e gravada em disco.\n\
                        Portas ativas: {}\n\n\
                      • ATALHOS:\n\
-                       [↑↓]  Scroll: Navegar nos incidentes (mantém histórico de 100).\n\
+                       [↑↓ / j/k] Scroll: Navegar nos incidentes ou neste manual.\n\
                        [F]   Filtro: Alternar filtro de severidade (Todos / Críticos / Médio+).\n\
                        [W]   Avisos: Lista portas perigosas abertas e como fechá-las.\n\
                        [K]   Killswitch: Isola o PC da rede imediatamente.\n\
@@ -589,7 +602,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • INDICADORES:\n\
                        * após o IP = mesmo atacante visto múltiplas vezes (coluna Hits).\n\
                        CRIT: Crítico  |  MED: Médio  |  ALRT: Alerta  |  SCAN: Varrimento\n\n\
-                     [Prime 'I' ou 'ESC' para voltar ao painel]",
+                     [j/k ou ↑↓ scroll | I/ESC voltar]",
                     trap_ports_str
                 ),
             ),
@@ -606,7 +619,7 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                        (country + city) and classified with risk badges.\n\
                        Active trap ports: {}\n\n\
                      • SHORTCUTS:\n\
-                       [↑↓]  Scroll: Navigate incident history (keeps last 100).\n\
+                       [↑↓ / j/k] Scroll: Navigate incident history or this manual.\n\
                        [F]   Filter: Cycle severity filter (All / Critical / Medium+).\n\
                        [W]   Warnings: Checks risky listening ports and fix commands.\n\
                        [K]   Killswitch: Disconnects the system from all networks.\n\
@@ -620,20 +633,23 @@ pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
                      • INDICATORS:\n\
                        * after IP = same attacker seen multiple times (Hits column).\n\
                        CRIT: Critical  |  MED: Medium  |  ALRT: Alert  |  SCAN: Scan/Sweep\n\n\
-                     [Press 'I' or 'ESC' to return]",
+                     [j/k or ↑↓ scroll | I/ESC return]",
                     trap_ports_str
                 ),
             ),
         };
 
+        let final_title = format_modal_title(modal_title, modal_scroll);
+
         let modal_p = Paragraph::new(modal_body)
             .style(Style::default().fg(Color::White))
             .wrap(Wrap { trim: true })
+            .scroll((modal_scroll, 0))
             .alignment(Alignment::Left)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(modal_title)
+                    .title(final_title)
                     .style(Style::default().bg(Color::Black).fg(Color::Cyan)),
             );
 
@@ -731,5 +747,11 @@ mod tests {
                 "ISP",
             ]
         );
+    }
+
+    #[test]
+    fn test_format_modal_title() {
+        assert_eq!(format_modal_title(" [#] MANUAL ", 0), " [#] MANUAL ");
+        assert_eq!(format_modal_title(" [#] MANUAL ", 5), " [#] MANUAL [+5] ");
     }
 }

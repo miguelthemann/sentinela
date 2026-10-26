@@ -97,6 +97,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut show_warnings = false;
     let mut cached_warnings: Vec<PortWarning> = Vec::new();
     let mut scroll_offset: usize = 0;
+    let mut modal_scroll: u16 = 0;
     let mut severity_filter = SeverityFilter::All;
 
     // Mapa de hit_count por IP (acumula ao longo da sessão)
@@ -176,6 +177,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 warnings: &cached_warnings,
                 failed_traps: &failed_traps,
                 scroll_offset,
+                modal_scroll,
                 severity_filter,
                 severity_stats: &severity_stats,
                 port_stats: &port_stats,
@@ -200,21 +202,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 if show_help || show_warnings {
                     match key.code {
-                        KeyCode::Char('i' | 'I') => show_help = false,
-                        KeyCode::Char('w' | 'W') => show_warnings = false,
+                        KeyCode::Char('i' | 'I') => {
+                            show_help = false;
+                            modal_scroll = 0;
+                        }
+                        KeyCode::Char('w' | 'W') => {
+                            show_warnings = false;
+                            modal_scroll = 0;
+                        }
                         KeyCode::Esc => {
                             show_help = false;
                             show_warnings = false;
+                            modal_scroll = 0;
+                        }
+                        KeyCode::Down | KeyCode::Char('j' | 'J') => {
+                            modal_scroll = modal_scroll.saturating_add(1).min(200);
+                        }
+                        KeyCode::Up | KeyCode::Char('k' | 'K') => {
+                            modal_scroll = modal_scroll.saturating_sub(1);
+                        }
+                        KeyCode::PageDown => {
+                            modal_scroll = modal_scroll.saturating_add(5).min(200);
+                        }
+                        KeyCode::PageUp => {
+                            modal_scroll = modal_scroll.saturating_sub(5);
+                        }
+                        KeyCode::Home => {
+                            modal_scroll = 0;
                         }
                         _ => {}
                     }
                 } else {
                     match key.code {
                         KeyCode::Char('q' | 'Q') => break,
-                        KeyCode::Char('i' | 'I') => show_help = true,
+                        KeyCode::Char('i' | 'I') => {
+                            show_help = true;
+                            modal_scroll = 0;
+                        }
                         KeyCode::Char('w' | 'W') => {
                             cached_warnings = network::scan_open_ports_warnings(&trap_ports, lang);
                             show_warnings = true;
+                            modal_scroll = 0;
                         }
                         KeyCode::Char('l' | 'L') => {
                             lang = match lang {
@@ -278,13 +306,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             scroll_offset = 0;
                         }
                         // Scroll na tabela
-                        KeyCode::Down => {
+                        KeyCode::Down | KeyCode::Char('j' | 'J' | 'n' | 'N') => {
                             if scroll_offset + 1 < filtered_count {
                                 scroll_offset += 1;
                             }
                         }
-                        KeyCode::Up => {
+                        KeyCode::Up | KeyCode::Char('p' | 'P') => {
                             scroll_offset = scroll_offset.saturating_sub(1);
+                        }
+                        KeyCode::PageDown => {
+                            scroll_offset =
+                                (scroll_offset + 5).min(filtered_count.saturating_sub(1));
+                        }
+                        KeyCode::PageUp => {
+                            scroll_offset = scroll_offset.saturating_sub(5);
                         }
                         KeyCode::Home => {
                             scroll_offset = 0;
@@ -362,42 +397,63 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ),
     };
 
-    let sev_breakdown = match lang {
-        Language::Pt => format!(
-            "\x1b[1;31m{} Críticos\x1b[0m | \x1b[1;33m{} Médios\x1b[0m | \x1b[1;34m{} Alertas\x1b[0m | \x1b[1;35m{} Scans\x1b[0m | \x1b[1;31m{} Varrimentos\x1b[0m",
-            critical_count, medium_count, alert_count, scan_count, sweep_count
-        ),
-        Language::En => format!(
-            "\x1b[1;31m{} Critical\x1b[0m | \x1b[1;33m{} Medium\x1b[0m | \x1b[1;34m{} Alerts\x1b[0m | \x1b[1;35m{} Scans\x1b[0m | \x1b[1;31m{} Sweeps\x1b[0m",
-            critical_count, medium_count, alert_count, scan_count, sweep_count
-        ),
+    let (term_w, _) = crossterm::terminal::size().unwrap_or((70, 24));
+    let term_w = (term_w as usize).clamp(38, 70);
+    let bar = "=".repeat(term_w);
+    let subbar = "-".repeat(term_w);
+
+    let sev_breakdown = if term_w < 65 {
+        match lang {
+            Language::Pt => format!(
+                "\x1b[1;31m{} Crit\x1b[0m \x1b[1;33m{} Med\x1b[0m \x1b[1;34m{} Alrt\x1b[0m \x1b[1;35m{} Scan\x1b[0m \x1b[1;31m{} Var\x1b[0m",
+                critical_count, medium_count, alert_count, scan_count, sweep_count
+            ),
+            Language::En => format!(
+                "\x1b[1;31m{} Crit\x1b[0m \x1b[1;33m{} Med\x1b[0m \x1b[1;34m{} Alrt\x1b[0m \x1b[1;35m{} Scan\x1b[0m \x1b[1;31m{} Swp\x1b[0m",
+                critical_count, medium_count, alert_count, scan_count, sweep_count
+            ),
+        }
+    } else {
+        match lang {
+            Language::Pt => format!(
+                "\x1b[1;31m{} Críticos\x1b[0m | \x1b[1;33m{} Médios\x1b[0m | \x1b[1;34m{} Alertas\x1b[0m | \x1b[1;35m{} Scans\x1b[0m | \x1b[1;31m{} Varrimentos\x1b[0m",
+                critical_count, medium_count, alert_count, scan_count, sweep_count
+            ),
+            Language::En => format!(
+                "\x1b[1;31m{} Critical\x1b[0m | \x1b[1;33m{} Medium\x1b[0m | \x1b[1;34m{} Alerts\x1b[0m | \x1b[1;35m{} Scans\x1b[0m | \x1b[1;31m{} Sweeps\x1b[0m",
+                critical_count, medium_count, alert_count, scan_count, sweep_count
+            ),
+        }
     };
 
-    println!(
-        "\n\x1b[1;36m======================================================================\x1b[0m"
-    );
-    println!(
-        "\x1b[1;32m                  {}                 \x1b[0m",
-        title
-    );
-    println!(
-        "\x1b[1;36m======================================================================\x1b[0m"
-    );
-    println!(" [*] {time_lbl:<18} : \x1b[1m{minutes:02}m {seconds:02}s\x1b[0m");
-    println!(" [+] {det_lbl:<18} : \x1b[1;33m{total_detections_count}\x1b[0m");
-    println!(" [*] {ip_lbl:<18} : \x1b[1m{}\x1b[0m", unique_ips.len());
-    println!(" [!] {top_ip_lbl:<18} : \x1b[1;31m{top_ip_info}\x1b[0m");
-    println!(" [>] {port_lbl:<18} : \x1b[1;31m{top_port_info}\x1b[0m");
-    println!(" [!] {sev_lbl:<18} : {sev_breakdown}");
-    println!("----------------------------------------------------------------------");
-    println!(
-        " [#] SO / Kernel       : {} ({}) [{}]",
-        sys_info.distro, sys_info.kernel, sys_info.arch
-    );
-    println!(" [#] {log_lbl:<18} : \x1b[1;32m{full_log_path}\x1b[0m");
-    println!(
-        "\x1b[1;36m======================================================================\x1b[0m\n"
-    );
+    let lbl_w = if term_w < 55 { 13 } else { 18 };
+    let display_log = if term_w < 55 {
+        &log_file_name
+    } else {
+        &full_log_path
+    };
+    let os_line = if term_w < 55 {
+        format!("{} ({})", sys_info.distro, sys_info.arch)
+    } else {
+        format!(
+            "{} ({}) [{}]",
+            sys_info.distro, sys_info.kernel, sys_info.arch
+        )
+    };
+
+    println!("\n\x1b[1;36m{bar}\x1b[0m");
+    println!("\x1b[1;32m{:^width$}\x1b[0m", title, width = term_w);
+    println!("\x1b[1;36m{bar}\x1b[0m");
+    println!(" [*] {time_lbl:<lbl_w$} : \x1b[1m{minutes:02}m {seconds:02}s\x1b[0m");
+    println!(" [+] {det_lbl:<lbl_w$} : \x1b[1;33m{total_detections_count}\x1b[0m");
+    println!(" [*] {ip_lbl:<lbl_w$} : \x1b[1m{}\x1b[0m", unique_ips.len());
+    println!(" [!] {top_ip_lbl:<lbl_w$} : \x1b[1;31m{top_ip_info}\x1b[0m");
+    println!(" [>] {port_lbl:<lbl_w$} : \x1b[1;31m{top_port_info}\x1b[0m");
+    println!(" [!] {sev_lbl:<lbl_w$} : {sev_breakdown}");
+    println!("{subbar}");
+    println!(" [#] {:<lbl_w$} : {os_line}", "SO / Kernel");
+    println!(" [#] {log_lbl:<lbl_w$} : \x1b[1;32m{display_log}\x1b[0m");
+    println!("\x1b[1;36m{bar}\x1b[0m\n");
 
     Ok(())
 }
@@ -423,6 +479,7 @@ fn print_help() {
     println!("  k               Ativar / Desativar Emergency Network Killswitch");
     println!("  f               Alternar filtro de severidade (Todos -> Críticos -> Médio+)");
     println!("  r               Repor estado da rede (desativar killswitch)");
-    println!("  ↑ / ↓           Navegar na tabela de incidentes detetados");
+    println!("  ↑ / ↓, PgUp/Dn  Navegar na tabela (modais: ↑/↓ ou j/k)");
+    println!("  PgUp / PgDn     Deslocar 5 linhas");
     println!("  Home / End      Saltar para o topo ou fim da lista");
 }

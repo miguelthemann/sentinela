@@ -62,6 +62,7 @@ struct TrapConnection {
 /// Atualiza o valor de "Hits" da entrada correspondente no log em disco.
 /// Procura a última entrada correspondente ao IP fornecido e substitui o valor de Hits
 /// pelo valor agregado em tempo real.
+#[allow(dead_code)]
 pub fn update_log_hit_count(filename: &str, ip: &str, hit_count: usize) {
     if let Ok(content) = std::fs::read_to_string(filename) {
         let lines: Vec<&str> = content.lines().collect();
@@ -151,7 +152,10 @@ pub async fn log_incident_to_disk(incident: &Incident) {
 
 /// Inicia armadilhas TCP nas portas fornecidas.
 /// Devolve (portas_ativas, portas_com_erro).
-pub async fn start_traps(tx: UnboundedSender<Incident>, trap_ports: &[u16]) -> (Vec<u16>, Vec<u16>) {
+pub async fn start_traps(
+    tx: UnboundedSender<Incident>,
+    trap_ports: &[u16],
+) -> (Vec<u16>, Vec<u16>) {
     let mut active = Vec::new();
     let mut failed = Vec::new();
 
@@ -177,7 +181,6 @@ pub async fn start_traps(tx: UnboundedSender<Incident>, trap_ports: &[u16]) -> (
                 hit_count: 1, // Inicializado a 1; atualizado pelo ciclo principal com base na contagem real
             };
 
-            log_incident_to_disk(&incident).await;
             let _ = tx_worker.send(incident);
         }
     });
@@ -199,9 +202,10 @@ pub async fn start_traps(tx: UnboundedSender<Incident>, trap_ports: &[u16]) -> (
                         if let Ok((_socket, peer_addr)) = listener.accept().await {
                             // Converte endereços IPv4-mapped em IPv6 para IPv4 nativo para consistência
                             let attacker_ip = match peer_addr.ip() {
-                                std::net::IpAddr::V6(v6) => {
-                                    v6.to_ipv4_mapped().map(std::net::IpAddr::V4).unwrap_or(std::net::IpAddr::V6(v6))
-                                }
+                                std::net::IpAddr::V6(v6) => v6
+                                    .to_ipv4_mapped()
+                                    .map(std::net::IpAddr::V4)
+                                    .unwrap_or(std::net::IpAddr::V6(v6)),
                                 std::net::IpAddr::V4(v4) => std::net::IpAddr::V4(v4),
                             };
 

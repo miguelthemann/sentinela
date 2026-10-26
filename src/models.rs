@@ -80,7 +80,7 @@ impl SeverityFilter {
 }
 
 /// Resposta da API GeoIP (ip-api.com)
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct GeoResponse {
     pub country: Option<String>,
     pub city: Option<String>,

@@ -106,161 +106,157 @@ mod linux {
                 ..Default::default()
             };
 
-            match datalink::channel(&iface, config) {
-                Ok(Channel::Ethernet(_, mut rx)) => {
-                    started = true;
-                    let tx_clone = tx.clone();
-                    let ports = trap_ports.clone();
-                    let rt = handle.clone();
+            if let Ok(Channel::Ethernet(_, mut rx)) = datalink::channel(&iface, config) {
+                started = true;
+                let tx_clone = tx.clone();
+                let ports = trap_ports.clone();
+                let rt = handle.clone();
 
-                    std::thread::spawn(move || {
-                        let mut trap_dedup: HashMap<(IpAddr, u16), Instant> = HashMap::new();
-                        let mut sweep_tracker: HashMap<IpAddr, Vec<(u16, Instant)>> = HashMap::new();
-                        let mut sweep_alert_dedup: HashMap<IpAddr, Instant> = HashMap::new();
-                        let mut last_cleanup = Instant::now();
+                std::thread::spawn(move || {
+                    let mut trap_dedup: HashMap<(IpAddr, u16), Instant> = HashMap::new();
+                    let mut sweep_tracker: HashMap<IpAddr, Vec<(u16, Instant)>> = HashMap::new();
+                    let mut sweep_alert_dedup: HashMap<IpAddr, Instant> = HashMap::new();
+                    let mut last_cleanup = Instant::now();
 
-                        loop {
-                            match rx.next() {
-                                Ok(raw) => {
-                                    if let Some(eth) = EthernetPacket::new(raw) {
-                                        if let Some((src_ip, dst_port, tcp_flags)) =
-                                            extract_tcp_info(&eth)
-                                        {
-                                            let is_syn = tcp_flags & TcpFlags::SYN != 0
-                                                && tcp_flags & TcpFlags::ACK == 0;
-                                            let is_stealth = is_unusual_scan(tcp_flags);
-                                            if !is_syn && !is_stealth {
-                                                continue;
-                                            }
+                    loop {
+                        let now = Instant::now();
+                        // Limpeza periódica dos mapas a cada 10 segundos
+                        if now.duration_since(last_cleanup) >= Duration::from_secs(10) {
+                            last_cleanup = now;
+                            cleanup_scanner_maps(
+                                &mut trap_dedup,
+                                &mut sweep_tracker,
+                                &mut sweep_alert_dedup,
+                                now,
+                                sweep_config.window,
+                            );
+                        }
 
-                                            if crate::network::is_host_ip(src_ip) {
-                                                continue;
-                                            }
+                        if let Ok(raw) = rx.next() {
+                            if let Some(eth) = EthernetPacket::new(raw) {
+                                if let Some((src_ip, dst_port, tcp_flags)) = extract_tcp_info(&eth)
+                                {
+                                    let is_syn = tcp_flags & TcpFlags::SYN != 0
+                                        && tcp_flags & TcpFlags::ACK == 0;
+                                    let is_stealth = is_unusual_scan(tcp_flags);
+                                    if !is_syn && !is_stealth {
+                                        continue;
+                                    }
 
-                                            let now = Instant::now();
+                                    if crate::network::is_host_ip(src_ip) {
+                                        continue;
+                                    }
 
-                                            // 1. Alerta imediato para portos armadilha
-                                            if ports.contains(&dst_port) {
-                                                let key = (src_ip, dst_port);
-                                                let fresh = trap_dedup
-                                                    .get(&key)
-                                                    .map(|t| now.duration_since(*t) >= DEDUP_WINDOW)
-                                                    .unwrap_or(true);
+                                    let now = Instant::now();
 
-                                                if fresh {
-                                                    trap_dedup.insert(key, now);
+                                    // 1. Alerta imediato para portos armadilha
+                                    if ports.contains(&dst_port) {
+                                        let key = (src_ip, dst_port);
+                                        let fresh = trap_dedup
+                                            .get(&key)
+                                            .map(|t| now.duration_since(*t) >= DEDUP_WINDOW)
+                                            .unwrap_or(true);
 
-                                                    let scan_type = if is_stealth {
-                                                        describe_scan_type(tcp_flags)
+                                        if fresh {
+                                            trap_dedup.insert(key, now);
+
+                                            let scan_type = if is_stealth {
+                                                describe_scan_type(tcp_flags)
+                                            } else {
+                                                "SYN"
+                                            };
+
+                                            let tx2 = tx_clone.clone();
+                                            let label = scan_type.to_string();
+                                            rt.spawn(async move {
+                                                let (country, city, isp) = inspect_ip(src_ip).await;
+                                                let _ = tx2.send(Incident {
+                                                    timestamp: Local::now()
+                                                        .format("%Y-%m-%d %H:%M:%S")
+                                                        .to_string(),
+                                                    ip: src_ip.to_string(),
+                                                    port: dst_port,
+                                                    service: format!(
+                                                        "SCAN {}→{}",
+                                                        label,
+                                                        classify_port(dst_port).0
+                                                    ),
+                                                    severity: "SCAN".to_string(),
+                                                    country,
+                                                    city,
+                                                    isp,
+                                                    hit_count: 1,
+                                                });
+                                            });
+                                        }
+                                    }
+
+                                    // 2. Deteção inteligente de port sweep (janela deslizante)
+                                    {
+                                        let history = sweep_tracker.entry(src_ip).or_default();
+                                        history.retain(|(_, ts)| {
+                                            now.duration_since(*ts) <= sweep_config.window
+                                        });
+                                        history.push((dst_port, now));
+
+                                        let distinct_ports: HashSet<u16> =
+                                            history.iter().map(|(p, _)| *p).collect();
+
+                                        if distinct_ports.len() >= sweep_config.threshold {
+                                            let should_alert = sweep_alert_dedup
+                                                .get(&src_ip)
+                                                .map(|t| {
+                                                    now.duration_since(*t) >= sweep_config.window
+                                                })
+                                                .unwrap_or(true);
+
+                                            if should_alert {
+                                                sweep_alert_dedup.insert(src_ip, now);
+                                                let mut swept: Vec<u16> =
+                                                    distinct_ports.into_iter().collect();
+                                                swept.sort_unstable();
+                                                history.clear();
+
+                                                let tx2 = tx_clone.clone();
+                                                rt.spawn(async move {
+                                                    let (country, city, isp) =
+                                                        inspect_ip(src_ip).await;
+                                                    let ports_str = if swept.len() > 6 {
+                                                        let sample = swept[..6]
+                                                            .iter()
+                                                            .map(|p| p.to_string())
+                                                            .collect::<Vec<_>>()
+                                                            .join(",");
+                                                        format!("{},+{}p", sample, swept.len() - 6)
                                                     } else {
-                                                        "SYN"
+                                                        swept
+                                                            .iter()
+                                                            .map(|p| p.to_string())
+                                                            .collect::<Vec<_>>()
+                                                            .join(",")
                                                     };
-
-                                                    let tx2 = tx_clone.clone();
-                                                    let label = scan_type.to_string();
-                                                    rt.spawn(async move {
-                                                        let (country, city, isp) =
-                                                            inspect_ip(src_ip).await;
-                                                        let _ = tx2.send(Incident {
-                                                            timestamp: Local::now()
-                                                                .format("%Y-%m-%d %H:%M:%S")
-                                                                .to_string(),
-                                                            ip: src_ip.to_string(),
-                                                            port: dst_port,
-                                                            service: format!(
-                                                                "SCAN {}→{}",
-                                                                label,
-                                                                classify_port(dst_port).0
-                                                            ),
-                                                            severity: "SCAN".to_string(),
-                                                            country,
-                                                            city,
-                                                            isp,
-                                                            hit_count: 1,
-                                                        });
+                                                    let _ = tx2.send(Incident {
+                                                        timestamp: Local::now()
+                                                            .format("%Y-%m-%d %H:%M:%S")
+                                                            .to_string(),
+                                                        ip: src_ip.to_string(),
+                                                        port: 0,
+                                                        service: format!("SWEEP [{}]", ports_str),
+                                                        severity: "SWEEP".to_string(),
+                                                        country,
+                                                        city,
+                                                        isp,
+                                                        hit_count: 1,
                                                     });
-                                                }
-                                            }
-
-                                            // 2. Deteção inteligente de port sweep (janela deslizante)
-                                            {
-                                                let history = sweep_tracker.entry(src_ip).or_default();
-                                                history.retain(|(_, ts)| now.duration_since(*ts) <= sweep_config.window);
-                                                history.push((dst_port, now));
-
-                                                let distinct_ports: HashSet<u16> = history.iter().map(|(p, _)| *p).collect();
-
-                                                if distinct_ports.len() >= sweep_config.threshold {
-                                                    let should_alert = sweep_alert_dedup
-                                                        .get(&src_ip)
-                                                        .map(|t| now.duration_since(*t) >= sweep_config.window)
-                                                        .unwrap_or(true);
-
-                                                    if should_alert {
-                                                        sweep_alert_dedup.insert(src_ip, now);
-                                                        let mut swept: Vec<u16> = distinct_ports.into_iter().collect();
-                                                        swept.sort_unstable();
-                                                        history.clear();
-
-                                                        let tx2 = tx_clone.clone();
-                                                        rt.spawn(async move {
-                                                            let (country, city, isp) =
-                                                                inspect_ip(src_ip).await;
-                                                            let ports_str = if swept.len() > 6 {
-                                                                let sample = swept[..6]
-                                                                    .iter()
-                                                                    .map(|p| p.to_string())
-                                                                    .collect::<Vec<_>>()
-                                                                    .join(",");
-                                                                format!("{},+{}p", sample, swept.len() - 6)
-                                                            } else {
-                                                                swept
-                                                                    .iter()
-                                                                    .map(|p| p.to_string())
-                                                                    .collect::<Vec<_>>()
-                                                                    .join(",")
-                                                            };
-                                                            let _ = tx2.send(Incident {
-                                                                timestamp: Local::now()
-                                                                    .format("%Y-%m-%d %H:%M:%S")
-                                                                    .to_string(),
-                                                                ip: src_ip.to_string(),
-                                                                port: 0,
-                                                                service: format!(
-                                                                    "SWEEP [{}]",
-                                                                    ports_str
-                                                                ),
-                                                                severity: "SWEEP".to_string(),
-                                                                country,
-                                                                city,
-                                                                isp,
-                                                                hit_count: 1,
-                                                            });
-                                                        });
-                                                    }
-                                                }
-                                            }
-
-                                            // Limpeza periódica dos 3 mapas a cada 10 segundos
-                                            if now.duration_since(last_cleanup) >= Duration::from_secs(10) {
-                                                last_cleanup = now;
-                                                cleanup_scanner_maps(
-                                                    &mut trap_dedup,
-                                                    &mut sweep_tracker,
-                                                    &mut sweep_alert_dedup,
-                                                    now,
-                                                    sweep_config.window,
-                                                );
+                                                });
                                             }
                                         }
                                     }
                                 }
-                                Err(_) => {}
                             }
                         }
-                    });
-                }
-                Ok(_) | Err(_) => {}
+                    }
+                });
             }
         }
 
@@ -276,7 +272,11 @@ mod linux {
                     return None;
                 }
                 let tcp = TcpPacket::new(ip.payload())?;
-                Some((IpAddr::V4(ip.get_source()), tcp.get_destination(), tcp.get_flags()))
+                Some((
+                    IpAddr::V4(ip.get_source()),
+                    tcp.get_destination(),
+                    tcp.get_flags(),
+                ))
             }
             EtherTypes::Ipv6 => {
                 let ip = Ipv6Packet::new(eth.payload())?;
@@ -284,7 +284,11 @@ mod linux {
                     return None;
                 }
                 let tcp = TcpPacket::new(ip.payload())?;
-                Some((IpAddr::V6(ip.get_source()), tcp.get_destination(), tcp.get_flags()))
+                Some((
+                    IpAddr::V6(ip.get_source()),
+                    tcp.get_destination(),
+                    tcp.get_flags(),
+                ))
             }
             _ => None,
         }
@@ -304,7 +308,10 @@ mod linux {
             "NULL"
         } else if flags == TcpFlags::FIN {
             "FIN"
-        } else if flags & TcpFlags::FIN != 0 && flags & TcpFlags::PSH != 0 && flags & TcpFlags::URG != 0 {
+        } else if flags & TcpFlags::FIN != 0
+            && flags & TcpFlags::PSH != 0
+            && flags & TcpFlags::URG != 0
+        {
             "XMAS"
         } else {
             "SYN"
@@ -380,7 +387,10 @@ mod linux {
             history.retain(|(_, ts)| now.duration_since(*ts) <= config.window);
             let distinct: HashSet<u16> = history.iter().map(|(p, _)| *p).collect();
             assert_eq!(distinct.len(), 4);
-            assert!(distinct.len() >= config.threshold, "Deve atingir o limiar de SWEEP!");
+            assert!(
+                distinct.len() >= config.threshold,
+                "Deve atingir o limiar de SWEEP!"
+            );
 
             history.push((80, now));
             let distinct_repeated: HashSet<u16> = history.iter().map(|(p, _)| *p).collect();

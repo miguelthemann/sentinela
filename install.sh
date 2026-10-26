@@ -10,14 +10,14 @@ set -e
 REPO="teizinh/sentinela"
 BINARY_NAME="sentinela"
 
-# Cores para o terminal
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
+# Cores para o terminal (compatível com POSIX sh e dash)
+RED=$(printf '\033[0;31m')
+GREEN=$(printf '\033[0;32m')
+BLUE=$(printf '\033[0;34m')
+CYAN=$(printf '\033[0;36m')
+YELLOW=$(printf '\033[1;33m')
+BOLD=$(printf '\033[1m')
+NC=$(printf '\033[0m')
 
 printf "${CYAN}"
 cat << 'EOF'
@@ -111,42 +111,67 @@ if [ ! -f "$TARGET_BIN" ]; then
 fi
 
 # 3. Determina o diretório de destino
+USE_SUDO=0
 if [ "$(id -u)" -eq 0 ]; then
     INSTALL_DIR="/usr/local/bin"
-    SUDO=""
-else
-    if command -v sudo >/dev/null 2>&1; then
-        INSTALL_DIR="/usr/local/bin"
-        SUDO="sudo"
-    else
-        INSTALL_DIR="$HOME/.local/bin"
-        SUDO=""
-        mkdir -p "$INSTALL_DIR"
-    fi
-fi
-
-DEST_PATH="${INSTALL_DIR}/${BINARY_NAME}"
-echo "  • A instalar o binário em: ${CYAN}${DEST_PATH}${NC}..."
-
-if [ -n "$SUDO" ]; then
-    $SUDO cp "$TARGET_BIN" "$DEST_PATH"
-    $SUDO chmod 755 "$DEST_PATH"
-else
+    DEST_PATH="${INSTALL_DIR}/${BINARY_NAME}"
+    echo "  • A instalar o binário em: ${CYAN}${DEST_PATH}${NC}..."
     cp "$TARGET_BIN" "$DEST_PATH"
     chmod 755 "$DEST_PATH"
+else
+    INSTALLED=0
+    if command -v sudo >/dev/null 2>&1; then
+        # Testa se sudo não requer password ou se estamos num terminal interativo
+        if sudo -n true 2>/dev/null || [ -t 0 ]; then
+            INSTALL_DIR="/usr/local/bin"
+            DEST_PATH="${INSTALL_DIR}/${BINARY_NAME}"
+            echo "  • A tentar instalar em: ${CYAN}${DEST_PATH}${NC} (via sudo)..."
+            if sudo cp "$TARGET_BIN" "$DEST_PATH" 2>/dev/null && sudo chmod 755 "$DEST_PATH" 2>/dev/null; then
+                INSTALLED=1
+                USE_SUDO=1
+            fi
+        fi
+    fi
+
+    # Fallback seguro para ~/.local/bin se não tiver sudo ou correr via pipe
+    if [ "$INSTALLED" -eq 0 ]; then
+        INSTALL_DIR="$HOME/.local/bin"
+        mkdir -p "$INSTALL_DIR"
+        DEST_PATH="${INSTALL_DIR}/${BINARY_NAME}"
+        echo "  • A instalar em: ${CYAN}${DEST_PATH}${NC} (modo de utilizador)..."
+        cp "$TARGET_BIN" "$DEST_PATH"
+        chmod 755 "$DEST_PATH"
+    fi
 fi
 
 # 4. No Linux: Aplica Permissões Raw Sockets e Gestão de Rede (CAP_NET_RAW + CAP_NET_ADMIN)
 if [ "$OS" = "Linux" ]; then
+    SETCAP_BIN=""
     if command -v setcap >/dev/null 2>&1; then
+        SETCAP_BIN="setcap"
+    elif [ -x "/usr/sbin/setcap" ]; then
+        SETCAP_BIN="/usr/sbin/setcap"
+    elif [ -x "/sbin/setcap" ]; then
+        SETCAP_BIN="/sbin/setcap"
+    fi
+
+    if [ -n "$SETCAP_BIN" ]; then
         echo "  • A configurar capacidades de rede (CAP_NET_RAW + CAP_NET_ADMIN)..."
-        if [ -n "$SUDO" ]; then
-            $SUDO setcap cap_net_raw,cap_net_admin+eip "$DEST_PATH" 2>/dev/null && \
+        if [ "$(id -u)" -eq 0 ]; then
+            "$SETCAP_BIN" cap_net_raw,cap_net_admin+eip "$DEST_PATH" 2>/dev/null && \
+                echo "    ${GREEN}✓ Permissões CAP_NET_RAW e CAP_NET_ADMIN atribuídas (Deteção SYN scan e Killswitch ativos sem root!)${NC}" || true
+        elif [ "$USE_SUDO" -eq 1 ]; then
+            sudo "$SETCAP_BIN" cap_net_raw,cap_net_admin+eip "$DEST_PATH" 2>/dev/null && \
                 echo "    ${GREEN}✓ Permissões CAP_NET_RAW e CAP_NET_ADMIN atribuídas (Deteção SYN scan e Killswitch ativos sem root!)${NC}" || \
                 echo "    ${YELLOW}! Aviso: Não foi possível atribuir capacidades completas. O Sentinela funcionará como honeypot TCP.${NC}"
         else
-            setcap cap_net_raw,cap_net_admin+eip "$DEST_PATH" 2>/dev/null || true
+            echo "    ${YELLOW}! Dica: Para ativar a deteção SYN scan e Killswitch sem root, executa:${NC}"
+            echo "      sudo $SETCAP_BIN cap_net_raw,cap_net_admin+eip \"$DEST_PATH\""
         fi
+    else
+        echo "    ${YELLOW}! Aviso: Utilitário 'setcap' não encontrado no sistema.${NC}"
+        echo "      Em sistemas Debian/Ubuntu, podes instalar com: sudo apt install libcap2-bin"
+        echo "      Depois executa: sudo setcap cap_net_raw,cap_net_admin+eip \"$DEST_PATH\""
     fi
 fi
 

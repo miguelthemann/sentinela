@@ -7,26 +7,45 @@ use ratatui::{
 };
 use std::collections::HashMap;
 
-pub fn render_ui(
-    f: &mut Frame,
-    incidents: &[Incident],
-    killswitch_active: bool,
-    killswitch_failed: bool,
-    local_ips: &str,
-    log_name: &str,
-    sys_info: &SysInfo,
-    lang: Language,
-    show_help: bool,
-    show_warnings: bool,
-    warnings: &[PortWarning],
-    failed_traps: &[u16],
-    scroll_offset: usize,
-    severity_filter: SeverityFilter,
-    severity_stats: &HashMap<String, usize>,
-    trap_ports: &[u16],
-    scanner_active: bool,
-) {
+pub struct UiContext<'a> {
+    pub incidents: &'a [Incident],
+    pub killswitch_active: bool,
+    pub killswitch_failed: bool,
+    pub local_ips: &'a str,
+    pub log_name: &'a str,
+    pub sys_info: &'a SysInfo,
+    pub lang: Language,
+    pub show_help: bool,
+    pub show_warnings: bool,
+    pub warnings: &'a [PortWarning],
+    pub failed_traps: &'a [u16],
+    pub scroll_offset: usize,
+    pub severity_filter: SeverityFilter,
+    pub severity_stats: &'a HashMap<String, usize>,
+    pub trap_ports: &'a [u16],
+    pub scanner_active: bool,
+}
+
+pub fn render_ui(f: &mut Frame, ctx: &UiContext) {
     let screen_width = f.area().width;
+    let UiContext {
+        incidents,
+        killswitch_active,
+        killswitch_failed,
+        local_ips,
+        log_name,
+        sys_info,
+        lang,
+        show_help,
+        show_warnings,
+        warnings,
+        failed_traps,
+        scroll_offset,
+        severity_filter,
+        severity_stats,
+        trap_ports,
+        scanner_active,
+    } = *ctx;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -134,7 +153,11 @@ pub fn render_ui(
     };
 
     let header_p = Paragraph::new(header_info)
-        .style(Style::default().fg(status_color).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(status_color)
+                .add_modifier(Modifier::BOLD),
+        )
         .block(Block::default().borders(Borders::ALL).title(title_status));
     f.render_widget(header_p, top_chunks[0]);
 
@@ -176,8 +199,24 @@ pub fn render_ui(
     } else {
         // Modo alargado — inclui ISP e hits
         let h = match lang {
-            Language::Pt => vec!["Timestamp", "Risco", "IP Origem", "Hits", "Alvo / Serviço", "Localização", "ISP"],
-            Language::En => vec!["Timestamp", "Risk", "Source IP", "Hits", "Target / Service", "Location", "ISP"],
+            Language::Pt => vec![
+                "Timestamp",
+                "Risco",
+                "IP Origem",
+                "Hits",
+                "Alvo / Serviço",
+                "Localização",
+                "ISP",
+            ],
+            Language::En => vec![
+                "Timestamp",
+                "Risk",
+                "Source IP",
+                "Hits",
+                "Target / Service",
+                "Location",
+                "ISP",
+            ],
         };
         let c = vec![
             Constraint::Length(20),
@@ -191,9 +230,13 @@ pub fn render_ui(
         (h, c)
     };
 
-    let header_cells = headers_text
-        .into_iter()
-        .map(|h| Cell::from(h).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    let header_cells = headers_text.into_iter().map(|h| {
+        Cell::from(h).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    });
     let header_row = Row::new(header_cells).height(1).bottom_margin(1);
 
     // Aplica filtro de severidade e scroll
@@ -202,67 +245,66 @@ pub fn render_ui(
         .filter(|i| severity_filter.matches(&i.severity))
         .collect();
 
-    let rows = filtered
-        .iter()
-        .skip(scroll_offset)
-        .map(|item| {
-            let risk_color = match item.severity.as_str() {
-                "CRÍTICO" => Color::Red,
-                "SWEEP" => Color::Red,       // varrimento amplo = tão sério quanto crítico
-                "MÉDIO" => Color::Yellow,
-                "SCAN" => Color::Magenta,
-                _ => Color::Cyan,
-            };
+    let rows = filtered.iter().skip(scroll_offset).map(|item| {
+        let risk_color = match item.severity.as_str() {
+            "CRÍTICO" => Color::Red,
+            "SWEEP" => Color::Red, // varrimento amplo = tão sério quanto crítico
+            "MÉDIO" => Color::Yellow,
+            "SCAN" => Color::Magenta,
+            _ => Color::Cyan,
+        };
 
-            // Localização: "Cidade, País" se disponível, senão só país
-            let location_str = if item.city.is_empty() {
-                item.country.clone()
+        // Localização: "Cidade, País" se disponível, senão só país
+        let location_str = if item.city.is_empty() {
+            item.country.clone()
+        } else {
+            format!("{}, {}", item.city, item.country)
+        };
+
+        let target_str = format!(":{} ({})", item.port, item.service);
+
+        // Indica consistentemente com * os IPs com múltiplos hits (tanto em modo compacto como expandido)
+        let ip_display = if item.hit_count > 1 {
+            format!("{}*", item.ip)
+        } else {
+            item.ip.clone()
+        };
+
+        let mut cells = vec![
+            Cell::from(item.timestamp.clone()),
+            Cell::from(item.severity.clone())
+                .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
+            Cell::from(ip_display.clone()),
+            Cell::from(target_str),
+            Cell::from(location_str.clone()),
+        ];
+
+        if screen_width >= 95 {
+            // Em modo alargado: inserir coluna Hits e separar Localização / ISP
+            let hits_str = if item.hit_count > 1 {
+                format!("×{}", item.hit_count)
             } else {
-                format!("{}, {}", item.city, item.country)
+                String::from("1")
             };
-
-            let target_str = format!(":{} ({})", item.port, item.service);
-
-            // Indica consistentemente com * os IPs com múltiplos hits (tanto em modo compacto como expandido)
-            let ip_display = if item.hit_count > 1 {
-                format!("{}*", item.ip)
-            } else {
-                item.ip.clone()
-            };
-
-            let mut cells = vec![
+            // Reconstruir cells na ordem certa para o modo alargado
+            cells = vec![
                 Cell::from(item.timestamp.clone()),
                 Cell::from(item.severity.clone())
                     .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
-                Cell::from(ip_display.clone()),
-                Cell::from(target_str),
-                Cell::from(location_str.clone()),
-            ];
-
-            if screen_width >= 95 {
-                // Em modo alargado: inserir coluna Hits e separar Localização / ISP
-                let hits_str = if item.hit_count > 1 {
-                    format!("×{}", item.hit_count)
+                Cell::from(ip_display),
+                Cell::from(hits_str).style(Style::default().fg(if item.hit_count > 1 {
+                    Color::Magenta
                 } else {
-                    String::from("1")
-                };
-                // Reconstruir cells na ordem certa para o modo alargado
-                cells = vec![
-                    Cell::from(item.timestamp.clone()),
-                    Cell::from(item.severity.clone())
-                        .style(Style::default().fg(risk_color).add_modifier(Modifier::BOLD)),
-                    Cell::from(ip_display),
-                    Cell::from(hits_str).style(
-                        Style::default().fg(if item.hit_count > 1 { Color::Magenta } else { Color::White })
-                    ),
-                    Cell::from(format!(":{} ({})", item.port, item.service)),
-                    Cell::from(location_str),
-                    Cell::from(item.isp.clone()),
-                ];
-            }
+                    Color::White
+                })),
+                Cell::from(format!(":{} ({})", item.port, item.service)),
+                Cell::from(location_str),
+                Cell::from(item.isp.clone()),
+            ];
+        }
 
-            Row::new(cells).style(Style::default().fg(Color::White))
-        });
+        Row::new(cells).style(Style::default().fg(Color::White))
+    });
 
     let filter_label_display = severity_filter.label(lang);
     let scroll_info = if filtered.len() > scroll_offset {
@@ -272,8 +314,14 @@ pub fn render_ui(
     };
 
     let table_title = match lang {
-        Language::Pt => format!(" Deteções em Direto [{}]{} ", filter_label_display, scroll_info),
-        Language::En => format!(" Live Detections [{}]{} ", filter_label_display, scroll_info),
+        Language::Pt => format!(
+            " Deteções em Direto [{}]{} ",
+            filter_label_display, scroll_info
+        ),
+        Language::En => format!(
+            " Live Detections [{}]{} ",
+            filter_label_display, scroll_info
+        ),
     };
 
     let table = Table::new(rows, col_constraints)

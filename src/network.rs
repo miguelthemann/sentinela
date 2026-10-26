@@ -1,5 +1,7 @@
 use crate::models::{GeoResponse, Incident, Language, PortWarning, SysInfo};
 use get_if_addrs::get_if_addrs;
+#[cfg(target_os = "linux")]
+use std::fs;
 use std::{
     collections::HashMap,
     env,
@@ -8,8 +10,6 @@ use std::{
     sync::OnceLock,
     time::Duration,
 };
-#[cfg(target_os = "linux")]
-use std::fs;
 use tokio::sync::RwLock;
 
 #[derive(Clone, Debug)]
@@ -35,6 +35,7 @@ fn get_http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(Duration::from_secs(3))
+            .user_agent("sentinela/0.3.2")
             .build()
             .expect("Falha ao construir cliente HTTP")
     })
@@ -76,7 +77,7 @@ pub fn get_system_info() -> SysInfo {
                 if line.starts_with("PRETTY_NAME=") {
                     return Some(
                         line.trim_start_matches("PRETTY_NAME=")
-                            .trim_matches('"')
+                            .trim_matches(|c| c == '"' || c == '\'')
                             .to_string(),
                     );
                 }
@@ -91,7 +92,11 @@ pub fn get_system_info() -> SysInfo {
 
     let arch = env::consts::ARCH.to_string();
 
-    SysInfo { distro, kernel, arch }
+    SysInfo {
+        distro,
+        kernel,
+        arch,
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -110,7 +115,11 @@ pub fn get_system_info() -> SysInfo {
     };
     let arch = env::consts::ARCH.to_string();
 
-    SysInfo { distro, kernel, arch }
+    SysInfo {
+        distro,
+        kernel,
+        arch,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -125,7 +134,11 @@ pub fn get_system_info() -> SysInfo {
     };
     let arch = env::consts::ARCH.to_string();
 
-    SysInfo { distro, kernel, arch }
+    SysInfo {
+        distro,
+        kernel,
+        arch,
+    }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
@@ -162,7 +175,11 @@ pub fn get_all_local_ips() -> String {
 /// Usa cache em memória com TTL de 5 minutos para falhas para permitir novas tentativas.
 pub async fn inspect_ip(ip: IpAddr) -> (String, String, String) {
     if ip.is_loopback() {
-        return ("Loopback".to_string(), "".to_string(), "Host Interno".to_string());
+        return (
+            "Loopback".to_string(),
+            "".to_string(),
+            "Host Interno".to_string(),
+        );
     }
 
     match ip {
@@ -203,13 +220,34 @@ pub async fn inspect_ip(ip: IpAddr) -> (String, String, String) {
                                 false, // Sucesso: resposta positiva
                             )
                         } else {
-                            (("Internet (WAN)".to_string(), "".to_string(), "Consulta Externa".to_string()), true)
+                            (
+                                (
+                                    "Internet (WAN)".to_string(),
+                                    "".to_string(),
+                                    "Consulta Externa".to_string(),
+                                ),
+                                true,
+                            )
                         }
                     } else {
-                        (("Internet (WAN)".to_string(), "".to_string(), "Consulta Externa".to_string()), true)
+                        (
+                            (
+                                "Internet (WAN)".to_string(),
+                                "".to_string(),
+                                "Consulta Externa".to_string(),
+                            ),
+                            true,
+                        )
                     }
                 }
-                Err(_) => (("Internet (WAN)".to_string(), "".to_string(), "Sem resposta GeoIP".to_string()), true),
+                Err(_) => (
+                    (
+                        "Internet (WAN)".to_string(),
+                        "".to_string(),
+                        "Sem resposta GeoIP".to_string(),
+                    ),
+                    true,
+                ),
             };
 
             // 3. Guarda em cache: respostas com falha recebem TTL curto (2 min) para retentativa futura
@@ -221,7 +259,13 @@ pub async fn inspect_ip(ip: IpAddr) -> (String, String, String) {
                     None
                 };
                 let mut cache = get_geo_cache().write().await;
-                cache.insert(ip, GeoCacheEntry { geo: result.clone(), expires_at });
+                cache.insert(
+                    ip,
+                    GeoCacheEntry {
+                        geo: result.clone(),
+                        expires_at,
+                    },
+                );
             }
 
             result
@@ -274,6 +318,22 @@ pub fn get_all_linux_interfaces() -> Vec<String> {
     ifaces
 }
 
+#[cfg(target_os = "linux")]
+pub fn cleanup_firewall_rules() {
+    for _ in 0..5 {
+        let d1 = run_cmd("iptables", &["-D", "INPUT", "!", "-i", "lo", "-j", "DROP"]);
+        let d2 = run_cmd("iptables", &["-D", "OUTPUT", "!", "-o", "lo", "-j", "DROP"]);
+        let d3 = run_cmd("ip6tables", &["-D", "INPUT", "!", "-i", "lo", "-j", "DROP"]);
+        let d4 = run_cmd(
+            "ip6tables",
+            &["-D", "OUTPUT", "!", "-o", "lo", "-j", "DROP"],
+        );
+        if !d1 && !d2 && !d3 && !d4 {
+            break;
+        }
+    }
+}
+
 /// Altera o estado da rede (isolamento / restauro).
 /// No Linux, utiliza prioritariamente regras Netfilter (iptables / ip6tables) para bloquear 100%
 /// do tráfego de entrada e saída. Isto garante o isolamento absoluto sem desligar as interfaces
@@ -289,10 +349,22 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
     if isolate {
         // --- 1. ISOLAMENTO VIA FIREWALL (MÉTODO PRIMÁRIO) ---
         // Bloqueia todo o tráfego que não seja loopback local (lo)
-        let ipt_in = run_cmd("iptables", &["-I", "INPUT", "1", "!", "-i", "lo", "-j", "DROP"]);
-        let ipt_out = run_cmd("iptables", &["-I", "OUTPUT", "1", "!", "-o", "lo", "-j", "DROP"]);
-        let _ = run_cmd("ip6tables", &["-I", "INPUT", "1", "!", "-i", "lo", "-j", "DROP"]);
-        let _ = run_cmd("ip6tables", &["-I", "OUTPUT", "1", "!", "-o", "lo", "-j", "DROP"]);
+        let ipt_in = run_cmd(
+            "iptables",
+            &["-I", "INPUT", "1", "!", "-i", "lo", "-j", "DROP"],
+        );
+        let ipt_out = run_cmd(
+            "iptables",
+            &["-I", "OUTPUT", "1", "!", "-o", "lo", "-j", "DROP"],
+        );
+        let _ = run_cmd(
+            "ip6tables",
+            &["-I", "INPUT", "1", "!", "-i", "lo", "-j", "DROP"],
+        );
+        let _ = run_cmd(
+            "ip6tables",
+            &["-I", "OUTPUT", "1", "!", "-o", "lo", "-j", "DROP"],
+        );
 
         let mut fw_active = false;
         if ipt_in || ipt_out {
@@ -310,7 +382,10 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
                 if run_cmd("ip", &["link", "set", "dev", iface, "down"]) {
                     successes += 1;
                 } else {
-                    errors.push(format!("Interface {}: permissão negada ao desativar link (requer sudo)", iface));
+                    errors.push(format!(
+                        "Interface {}: permissão negada ao desativar link (requer sudo)",
+                        iface
+                    ));
                 }
             }
             let _ = run_cmd("nmcli", &["networking", "off"]);
@@ -319,7 +394,9 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
 
         if successes == 0 {
             if errors.is_empty() {
-                errors.push("Nenhuma interface de rede ou firewall disponível para isolamento".to_string());
+                errors.push(
+                    "Nenhuma interface de rede ou firewall disponível para isolamento".to_string(),
+                );
             } else {
                 errors.push("O Killswitch requer privilégios de root para isolar a rede (executa com: sudo ./sentinela)".to_string());
             }
@@ -330,7 +407,11 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
                 errors.join("\n• ")
             );
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&filename) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&filename)
+            {
                 let _ = std::io::Write::write_all(&mut f, err_log.as_bytes());
             }
 
@@ -339,15 +420,7 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
     } else {
         // --- RESTAURO COMPLETO DA REDE ---
         // 1. Remove quaisquer regras DROP adicionadas pelo Sentinela
-        for _ in 0..5 {
-            let d1 = run_cmd("iptables", &["-D", "INPUT", "!", "-i", "lo", "-j", "DROP"]);
-            let d2 = run_cmd("iptables", &["-D", "OUTPUT", "!", "-o", "lo", "-j", "DROP"]);
-            let d3 = run_cmd("ip6tables", &["-D", "INPUT", "!", "-i", "lo", "-j", "DROP"]);
-            let d4 = run_cmd("ip6tables", &["-D", "OUTPUT", "!", "-o", "lo", "-j", "DROP"]);
-            if !d1 && !d2 && !d3 && !d4 {
-                break;
-            }
-        }
+        cleanup_firewall_rules();
 
         // 2. Levanta links de todas as interfaces listadas em /sys/class/net/
         // CRÍTICO: Nunca usar get_if_addrs() porque interfaces DOWN perdem os IPs e são ignoradas!
@@ -366,7 +439,10 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
         // 5. Restauração de IP e rotas (Gentoo / OpenRC / systemd / dhcpcd)
         let _ = run_cmd("dhcpcd", &["-n"]);
         for iface in &ifaces {
-            let _ = run_cmd("rc-service", &["--ifexists", &format!("net.{}", iface), "restart"]);
+            let _ = run_cmd(
+                "rc-service",
+                &["--ifexists", &format!("net.{}", iface), "restart"],
+            );
         }
         let _ = run_cmd("rc-service", &["--ifexists", "dhcpcd", "restart"]);
         let _ = run_cmd("networkctl", &["renew"]);
@@ -404,7 +480,10 @@ pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
 #[cfg(target_os = "macos")]
 pub fn toggle_network(isolate: bool) -> Result<(), Vec<String>> {
     let state = if isolate { "off" } else { "on" };
-    match Command::new("networksetup").args(["-setairportpower", "en0", state]).output() {
+    match Command::new("networksetup")
+        .args(["-setairportpower", "en0", state])
+        .output()
+    {
         Ok(output) if output.status.success() => Ok(()),
         Ok(output) => {
             let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -476,7 +555,10 @@ fn get_listening_ports() -> Vec<u16> {
         for line in text.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             // Formato típico Windows: TCP    0.0.0.0:8080    0.0.0.0:0    LISTENING    1234
-            if parts.len() >= 4 && parts[0].eq_ignore_ascii_case("TCP") && parts[3].eq_ignore_ascii_case("LISTENING") {
+            if parts.len() >= 4
+                && parts[0].eq_ignore_ascii_case("TCP")
+                && parts[3].eq_ignore_ascii_case("LISTENING")
+            {
                 let local_addr = parts[1];
                 if local_addr.starts_with("127.") || local_addr.starts_with("[::1]") {
                     continue;
@@ -687,7 +769,13 @@ $notify.Dispose();"#,
         );
 
         let _ = Command::new("powershell")
-            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_script])
+            .args([
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &ps_script,
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -754,7 +842,13 @@ $notify.Dispose();"#,
         );
 
         let _ = Command::new("powershell")
-            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_script])
+            .args([
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &ps_script,
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -795,7 +889,11 @@ mod tests {
             cache.insert(
                 ip,
                 GeoCacheEntry {
-                    geo: ("Internet (WAN)".to_string(), "".to_string(), "Sem resposta GeoIP".to_string()),
+                    geo: (
+                        "Internet (WAN)".to_string(),
+                        "".to_string(),
+                        "Sem resposta GeoIP".to_string(),
+                    ),
                     expires_at: Some(std::time::Instant::now() - Duration::from_secs(1)), // já expirado
                 },
             );
@@ -810,7 +908,10 @@ mod tests {
                 Some(exp) => now < exp,
                 None => true,
             };
-            assert!(!is_valid, "Entrada negativa expirada não deve ser considerada válida!");
+            assert!(
+                !is_valid,
+                "Entrada negativa expirada não deve ser considerada válida!"
+            );
         }
 
         // Insere entrada negativa válida (dentro dos 5 min de TTL)
@@ -819,7 +920,11 @@ mod tests {
             cache.insert(
                 ip,
                 GeoCacheEntry {
-                    geo: ("Internet (WAN)".to_string(), "".to_string(), "Sem resposta GeoIP".to_string()),
+                    geo: (
+                        "Internet (WAN)".to_string(),
+                        "".to_string(),
+                        "Sem resposta GeoIP".to_string(),
+                    ),
                     expires_at: Some(std::time::Instant::now() + Duration::from_secs(300)),
                 },
             );
@@ -833,7 +938,10 @@ mod tests {
                 Some(exp) => now < exp,
                 None => true,
             };
-            assert!(is_valid, "Entrada negativa dentro do TTL deve ser considerada válida!");
+            assert!(
+                is_valid,
+                "Entrada negativa dentro do TTL deve ser considerada válida!"
+            );
         }
 
         // Insere entrada positiva permanente (expires_at == None)
@@ -842,7 +950,11 @@ mod tests {
             cache.insert(
                 ip,
                 GeoCacheEntry {
-                    geo: ("Portugal".to_string(), "Lisbon".to_string(), "MEO".to_string()),
+                    geo: (
+                        "Portugal".to_string(),
+                        "Lisbon".to_string(),
+                        "MEO".to_string(),
+                    ),
                     expires_at: None,
                 },
             );
@@ -851,7 +963,10 @@ mod tests {
         {
             let cache = get_geo_cache().read().await;
             let entry = cache.get(&ip).unwrap();
-            assert!(entry.expires_at.is_none(), "Entrada positiva deve ter expires_at == None");
+            assert!(
+                entry.expires_at.is_none(),
+                "Entrada positiva deve ter expires_at == None"
+            );
             assert_eq!(entry.geo.0, "Portugal");
         }
     }

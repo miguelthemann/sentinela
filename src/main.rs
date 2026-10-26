@@ -50,10 +50,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if args.is_empty() {
             traps::DEFAULT_TRAP_PORTS.to_vec()
         } else {
-            let parsed: Vec<u16> = args
-                .iter()
-                .filter_map(|a| a.parse::<u16>().ok())
-                .collect();
+            let parsed: Vec<u16> = args.iter().filter_map(|a| a.parse::<u16>().ok()).collect();
             if parsed.is_empty() {
                 eprintln!("Portas inválidas. A usar portas padrão.");
                 traps::DEFAULT_TRAP_PORTS.to_vec()
@@ -104,7 +101,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Garante limpeza preventiva de quaisquer regras de firewall residuais no arranque (Linux)
     #[cfg(target_os = "linux")]
     {
-        let _ = network::toggle_network(false);
+        network::cleanup_firewall_rules();
     }
 
     loop {
@@ -126,8 +123,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             *count += 1;
             incident.hit_count = *count;
 
-            // Atualiza a entrada de log em disco correspondente com o hit_count real
-            traps::update_log_hit_count(&log_file_name, &incident.ip, *count);
+            // Regista o incidente em disco com o hit_count real
+            traps::log_incident_to_disk(&incident).await;
 
             // Dispara notificação nativa no ambiente gráfico (não bloqueante e com rate limit)
             network::send_desktop_alert(&incident);
@@ -151,25 +148,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .count();
 
         terminal.draw(|f| {
-            ui::render_ui(
-                f,
-                &incidents,
+            let ui_ctx = ui::UiContext {
+                incidents: &incidents,
                 killswitch_active,
                 killswitch_failed,
-                &local_ips,
-                &log_file_name,
-                &sys_info,
+                local_ips: &local_ips,
+                log_name: &log_file_name,
+                sys_info: &sys_info,
                 lang,
                 show_help,
                 show_warnings,
-                &cached_warnings,
-                &failed_traps,
+                warnings: &cached_warnings,
+                failed_traps: &failed_traps,
                 scroll_offset,
                 severity_filter,
-                &severity_stats,
-                &trap_ports,
+                severity_stats: &severity_stats,
+                trap_ports: &trap_ports,
                 scanner_active,
-            );
+            };
+            ui::render_ui(f, &ui_ctx);
         })?;
 
         if event::poll(Duration::from_millis(50))? {
@@ -238,7 +235,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         };
                                         network::send_desktop_notification_raw(
                                             "[!] Sentinela: Killswitch",
-                                            &format!("{}\n{}", msg, errs.first().cloned().unwrap_or_default()),
+                                            &format!(
+                                                "{}\n{}",
+                                                msg,
+                                                errs.first().cloned().unwrap_or_default()
+                                            ),
                                             "critical",
                                         );
                                     }
@@ -358,19 +359,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ),
     };
 
-    println!("\n\x1b[1;36m======================================================================\x1b[0m");
-    println!("\x1b[1;32m                  {}                 \x1b[0m", title);
-    println!("\x1b[1;36m======================================================================\x1b[0m");
-    println!(" [*] {:<18} : \x1b[1m{:02}m {:02}s\x1b[0m", time_lbl, minutes, seconds);
-    println!(" [+] {:<18} : \x1b[1;33m{}\x1b[0m", det_lbl, total_detections_count);
+    println!(
+        "\n\x1b[1;36m======================================================================\x1b[0m"
+    );
+    println!(
+        "\x1b[1;32m                  {}                 \x1b[0m",
+        title
+    );
+    println!(
+        "\x1b[1;36m======================================================================\x1b[0m"
+    );
+    println!(
+        " [*] {:<18} : \x1b[1m{:02}m {:02}s\x1b[0m",
+        time_lbl, minutes, seconds
+    );
+    println!(
+        " [+] {:<18} : \x1b[1;33m{}\x1b[0m",
+        det_lbl, total_detections_count
+    );
     println!(" [*] {:<18} : \x1b[1m{}\x1b[0m", ip_lbl, unique_ips.len());
     println!(" [!] {:<18} : \x1b[1;31m{}\x1b[0m", top_ip_lbl, top_ip_info);
     println!(" [>] {:<18} : \x1b[1;31m{}\x1b[0m", port_lbl, top_port_info);
     println!(" [!] {:<18} : {}", sev_lbl, sev_breakdown);
     println!("----------------------------------------------------------------------");
-    println!(" [#] SO / Kernel       : {} ({}) [{}]", sys_info.distro, sys_info.kernel, sys_info.arch);
+    println!(
+        " [#] SO / Kernel       : {} ({}) [{}]",
+        sys_info.distro, sys_info.kernel, sys_info.arch
+    );
     println!(" [#] {:<18} : \x1b[1;32m{}\x1b[0m", log_lbl, full_log_path);
-    println!("\x1b[1;36m======================================================================\x1b[0m\n");
+    println!(
+        "\x1b[1;36m======================================================================\x1b[0m\n"
+    );
 
     Ok(())
 }

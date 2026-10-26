@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/Language-Rust-orange.svg" alt="Rust">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/Interface-Ratatui%20TUI-purple.svg" alt="Ratatui TUI">
-  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg" alt="Platforms">
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
   <img src="https://img.shields.io/badge/Version-0.3.2-green.svg" alt="Version 0.3.2">
 </p>
 
@@ -22,7 +22,7 @@ It does not require a separate server, database or cloud account. It runs as a s
 
 ## Install
 
-**Linux / macOS:**
+**Linux:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/teizinh/sentinela/main/install.sh | bash
 ```
@@ -178,14 +178,14 @@ The killswitch also needs `CAP_NET_ADMIN` (or root) to insert `iptables` rules. 
 
 ## Platform support
 
-| Feature | Linux | Windows | macOS |
-|---|---|---|---|
-| Honeypot traps | ✓ | ✓ | ✓ |
-| Raw scan detection | ✓ | — | — |
-| Killswitch | ✓ (iptables + rfkill) | ✓ (PowerShell) | ✓ (networksetup) |
-| Desktop notifications | ✓ (notify-send) | ✓ (PowerShell) | ✓ (osascript) |
-| GeoIP lookup | ✓ | ✓ | ✓ |
-| Audit logs | ✓ | ✓ | ✓ |
+| Feature | Linux | Windows |
+|---|---|---|
+| Honeypot traps | ✓ | ✓ |
+| Raw scan detection | ✓ | — |
+| Killswitch | ✓ (iptables + rfkill) | ✓ (PowerShell) |
+| Desktop notifications | ✓ (notify-send) | ✓ (PowerShell) |
+| GeoIP lookup | ✓ | ✓ |
+| Audit logs | ✓ | ✓ |
 
 ---
 
